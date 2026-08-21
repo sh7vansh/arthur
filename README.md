@@ -21,64 +21,23 @@
 
 **Arthur** is a standalone, lightweight headless Chromium runtime engineered specifically for AI agents (such as Gloria, Claude, and autonomous coding assistants).
 
-Traditional browser automation tools either carry heavy driver overhead (Playwright/Puppeteer) or require brittle browser extension bridges with native messaging hosts and local desktop displays. Arthur eliminates all extension machinery by connecting directly to Chromium via **Chrome DevTools Protocol (CDP) WebSockets**, managing an ephemeral sandboxed Chromium process, retaining persistent Python REPL state across executions, and generating concise, token-efficient semantic DOM snapshots with assigned **Ref-IDs** (`[#1]`, `[#2]`).
+Arthur eliminates browser extensions, native messaging hosts, and heavy automation drivers by connecting directly to Chromium via **Chrome DevTools Protocol (CDP) WebSockets**. It manages an ephemeral sandboxed Chromium process, retains persistent Python REPL state across turns, and generates concise, token-efficient semantic DOM snapshots with assigned **Ref-IDs** (`[#1]`, `[#2]`).
 
 ```text
-+------------------------+
-|  AI Agent / MCP Client |
-+-----------+------------+
-            |  execute_python(code)
-            v
-+------------------------+
-|   FastMCP stdio/HTTP   |
-+-----------+------------+
-            |
-            v
-+--------------------------------------------------------+
-|                  PythonReplSession                     |
-|  * AST Statement/Expression Execution (exec/eval)      |
-|  * In-Memory Variable & Function Persistence           |
-|  * Token Budgeting & Telemetry Defanging               |
-|  * Single-Turn Diagnostic Auto-Snapshots on Errors     |
-+---------------------------+----------------------------+
-                            |
-                            v
-+--------------------------------------------------------+
-|            Synchronous Browser & Tab API               |
-|  * browser.navigate()  * browser.snapshot()            |
-|  * browser.click(ref)  * browser.type(ref, text)       |
-|  * browser.wait_for()  * browser.new_tab()             |
-+---------------------------+----------------------------+
-                            |  Thread-Safe Bridge
-                            v
-+--------------------------------------------------------+
-|                 _AsyncCDPRunner (Daemon)               |
-|  * CDPClient (Direct WebSocket Transport)              |
-|  * In-Page Semantic DOM Engine (Accessible Ref-IDs)    |
-|  * Synthetic Input Simulator (Coordinate-Accurate)     |
-+---------------------------+----------------------------+
-                            |  ws://127.0.0.1:<port>/devtools/browser/...
-                            v
-+--------------------------------------------------------+
-|        Headless Chromium Process (--headless=new)      |
-|  * Ephemeral Sandbox (--user-data-dir)                 |
-|  * Zero X11/VNC, Zero Extension, Zero Native Hosts     |
-+--------------------------------------------------------+
+Agent / MCP Client
+       │
+       ▼  execute_python(code)
+FastMCP Server (stdio / Streamable HTTP)
+       │
+       ▼
+Python REPL Session (stateful memory & auto-snapshots)
+       │
+       ▼
+Arthur Browser API (synchronous facade)
+       │
+       ▼  CDP WebSockets
+Headless Chromium (--headless=new)
 ```
-
----
-
-## Why Arthur?
-
-| Feature | Arthur | Playwright / Puppeteer | Extension-Based Bridges |
-| :--- | :--- | :--- | :--- |
-| **Transport** | **Direct CDP WebSockets** | CDP / Automation Driver | Extension IPC / Native Messaging |
-| **Agent Interface** | **Persistent Python REPL + MCP** | Per-action API / Custom | Custom Tool Schema / Extension |
-| **DOM Inspection** | **Compact Ref-ID Semantic Trees** | Full raw HTML or accessibility dumps | DOM injection scripts |
-| **Self-Healing** | **Auto Diagnostic Snapshot on Error** | Manual retry logic | Requires extra agent turns |
-| **Process Footprint** | **Minimal (~25MB Python + Chromium)** | Heavy node/driver dependencies | User desktop Chrome required |
-| **Headless / Containers** | **Native `--headless=new` (Zero GUI)** | Supported | Difficult (requires virtual displays) |
-| **Token Budgeting** | **Built-in truncation & defanging** | None | Ad-hoc |
 
 ---
 
