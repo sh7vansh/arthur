@@ -12,13 +12,13 @@ COPY pyproject.toml uv.lock ./
 
 # Install external dependencies into /app/.venv without installing project root
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-install-project
+    uv sync --frozen --no-dev --no-install-project --no-editable
 
 # Copy source code and install project into virtual environment
 COPY README.md LICENSE ./
 COPY src/ ./src/
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev
+    uv sync --frozen --no-dev --no-editable
 
 # Stage 2: Minimal production runtime container
 FROM python:3.12-slim-bookworm AS runtime
