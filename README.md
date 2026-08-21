@@ -1,6 +1,6 @@
 <div align="center">
 
-# ⚡ Arthur
+# Arthur
 
 ### Lightweight Headless Chromium Runtime & MCP Server for AI Agents
 
@@ -10,65 +10,65 @@
 [![Built with uv](https://img.shields.io/badge/built%20with-uv-purple.svg)](https://github.com/astral-sh/uv)
 
 <p align="center">
-  <b>Direct CDP WebSockets</b> • <b>Semantic Ref-ID Snapshots</b> • <b>Persistent Python REPL</b> • <b>FastMCP Server</b>
+  Direct CDP WebSockets • Semantic Ref-ID Snapshots • Persistent Python REPL • FastMCP Server
 </p>
 
 </div>
 
 ---
 
-## 📖 Overview
+## Overview
 
-**Arthur** is a standalone, lightweight headless Chromium runtime engineered specifically for AI agents (such as Gloria, Claude, and autonomous coding assistants). 
+**Arthur** is a standalone, lightweight headless Chromium runtime engineered specifically for AI agents (such as Gloria, Claude, and autonomous coding assistants).
 
 Traditional browser automation tools either carry heavy driver overhead (Playwright/Puppeteer) or require brittle browser extension bridges with native messaging hosts and local desktop displays. Arthur eliminates all extension machinery by connecting directly to Chromium via **Chrome DevTools Protocol (CDP) WebSockets**, managing an ephemeral sandboxed Chromium process, retaining persistent Python REPL state across executions, and generating concise, token-efficient semantic DOM snapshots with assigned **Ref-IDs** (`[#1]`, `[#2]`).
 
 ```text
-┌────────────────────────┐
-│  AI Agent / MCP Client │
-└───────────┬────────────┘
-            │  execute_python(code)
-            ▼
-┌────────────────────────┐
-│   FastMCP stdio/HTTP   │
-└───────────┬────────────┘
-            │
-            ▼
-┌────────────────────────────────────────────────────────┐
-│                  PythonReplSession                     │
-│  • AST Statement/Expression Execution (exec/eval)      │
-│  • In-Memory Variable & Function Persistence           │
-│  • Token Budgeting & Telemetry Defanging               │
-│  • Single-Turn Diagnostic Auto-Snapshots on Errors     │
-└───────────────────────────┬────────────────────────────┘
-                            │
-                            ▼
-┌────────────────────────────────────────────────────────┐
-│            Synchronous Browser & Tab API               │
-│  • browser.navigate()  • browser.snapshot()            │
-│  • browser.click(ref)  • browser.type(ref, text)       │
-│  • browser.wait_for()  • browser.new_tab()             │
-└───────────────────────────┬────────────────────────────┘
-                            │  Thread-Safe Bridge
-                            ▼
-┌────────────────────────────────────────────────────────┐
-│                 _AsyncCDPRunner (Daemon)               │
-│  • CDPClient (Direct WebSocket Transport)              │
-│  • In-Page Semantic DOM Engine (Accessible Ref-IDs)    │
-│  • Synthetic Input Simulator (Coordinate-Accurate)     │
-└───────────────────────────┬────────────────────────────┘
-                            │  ws://127.0.0.1:<port>/devtools/browser/...
-                            ▼
-┌────────────────────────────────────────────────────────┐
-│        Headless Chromium Process (--headless=new)      │
-│  • Ephemeral Sandbox (--user-data-dir)                 │
-│  • Zero X11/VNC, Zero Extension, Zero Native Hosts     │
-└────────────────────────────────────────────────────────┘
++------------------------+
+|  AI Agent / MCP Client |
++-----------+------------+
+            |  execute_python(code)
+            v
++------------------------+
+|   FastMCP stdio/HTTP   |
++-----------+------------+
+            |
+            v
++--------------------------------------------------------+
+|                  PythonReplSession                     |
+|  * AST Statement/Expression Execution (exec/eval)      |
+|  * In-Memory Variable & Function Persistence           |
+|  * Token Budgeting & Telemetry Defanging               |
+|  * Single-Turn Diagnostic Auto-Snapshots on Errors     |
++---------------------------+----------------------------+
+                            |
+                            v
++--------------------------------------------------------+
+|            Synchronous Browser & Tab API               |
+|  * browser.navigate()  * browser.snapshot()            |
+|  * browser.click(ref)  * browser.type(ref, text)       |
+|  * browser.wait_for()  * browser.new_tab()             |
++---------------------------+----------------------------+
+                            |  Thread-Safe Bridge
+                            v
++--------------------------------------------------------+
+|                 _AsyncCDPRunner (Daemon)               |
+|  * CDPClient (Direct WebSocket Transport)              |
+|  * In-Page Semantic DOM Engine (Accessible Ref-IDs)    |
+|  * Synthetic Input Simulator (Coordinate-Accurate)     |
++---------------------------+----------------------------+
+                            |  ws://127.0.0.1:<port>/devtools/browser/...
+                            v
++--------------------------------------------------------+
+|        Headless Chromium Process (--headless=new)      |
+|  * Ephemeral Sandbox (--user-data-dir)                 |
+|  * Zero X11/VNC, Zero Extension, Zero Native Hosts     |
++--------------------------------------------------------+
 ```
 
 ---
 
-## ⚡ Why Arthur?
+## Why Arthur?
 
 | Feature | Arthur | Playwright / Puppeteer | Extension-Based Bridges |
 | :--- | :--- | :--- | :--- |
@@ -82,14 +82,14 @@ Traditional browser automation tools either carry heavy driver overhead (Playwri
 
 ---
 
-## 🚀 Quickstart
+## Quickstart
 
 ### 1. Instant Zero-Clone Execution via `uvx`
 
-No cloning or manual installation required:
+No repository cloning or manual environment management is required:
 
 ```bash
-# Run MCP Server
+# Run MCP Server (stdio transport)
 uvx --from git+https://github.com/sh7vansh/arthur arthur mcp
 
 # Run Interactive Terminal REPL
@@ -103,7 +103,7 @@ uvx --from git+https://github.com/sh7vansh/arthur arthur repl -c "browser.naviga
 
 ### 2. Connect to MCP Clients (Claude Desktop, Cursor, etc.)
 
-Add Arthur to your MCP settings file (e.g. `claude_desktop_config.json`):
+Add Arthur to your MCP settings configuration (e.g. `claude_desktop_config.json`):
 
 #### Using `uvx` (Zero-Clone):
 ```json
@@ -142,7 +142,7 @@ Add Arthur to your MCP settings file (e.g. `claude_desktop_config.json`):
 
 ---
 
-## 🛠 Local Installation
+## Local Installation
 
 ### Prerequisites
 - **Python 3.10+**
@@ -154,13 +154,13 @@ Add Arthur to your MCP settings file (e.g. `claude_desktop_config.json`):
 git clone https://github.com/sh7vansh/arthur.git
 cd arthur
 
-# Install dependencies in an isolated virtualenv
+# Install dependencies in an isolated virtual environment
 uv sync --all-extras
 ```
 
 ---
 
-## 🧩 Key Capabilities
+## Key Capabilities
 
 ### 1. In-Page Semantic DOM Engine & Ref-IDs
 Arthur evaluates an in-page accessibility parser that extracts the visible DOM, calculates WAI-ARIA accessible roles/names, and generates a compact, token-efficient semantic tree with assigned numeric **Ref-IDs**:
@@ -189,7 +189,7 @@ import json
 browser.navigate("https://news.ycombinator.com")
 titles = browser.eval_js("[...document.querySelectorAll('.titleline > a')].map(a => a.innerText)")
 
-# Turn 2: State persists!
+# Turn 2: State persists across tool calls
 print(f"Captured {len(titles)} articles:")
 print(titles[:3])
 ```
@@ -201,11 +201,11 @@ print(titles[:3])
 ### 5. Output Budgeting & Telemetry Defanging
 All execution output passes through a strict budgeting pipeline:
 - Prevents context window explosion by truncating output exceeding token/character limits.
-- Automatically defangs tracking image beacons (`![beacon](url)` ➔ `[IMAGE_BLOCKED]`) and unsafe active HTML tags.
+- Automatically defangs tracking image beacons (`![beacon](url)` -> `[IMAGE_BLOCKED]`) and unsafe active HTML tags.
 
 ---
 
-## 📚 Python API Reference
+## Python API Reference
 
 The synchronous `browser` instance is pre-injected into the REPL environment:
 
@@ -245,12 +245,42 @@ browser.close_tab(2)
 
 ---
 
-## 🌐 Remote Deployment & Transports
+## Remote Deployment & Transports
 
-Arthur supports multiple network transports for remote and containerized execution:
+Arthur supports multiple network transports for remote, cloud, and containerized deployments.
 
-### 1. SSH Stdio Tunneling *(Recommended & Most Secure)*
-Run Arthur over SSH without exposing ports:
+### 1. Stateless Streamable HTTP (Recommended for Remote / Cloud)
+
+For remote servers, VMs, Docker containers, Cloudflare Tunnels, and reverse proxies, **Stateless Streamable HTTP is the most reliable transport**.
+
+#### Why Stateless HTTP is Superior for Remote Setups:
+- **Resilient to Network Drops**: Unlike stateful SSE connections that drop or report "Session Expired" when a network glitch occurs between agent turns, stateless HTTP treats each tool execution as an independent request.
+- **Proxy & Tunnel Friendly**: Works cleanly behind Nginx, Cloudflare Tunnels, AWS ALBs, and Ngrok without hitting idle connection timeouts (e.g. 60s stream timeouts).
+- **Preserved Backend State**: While the HTTP wire transport is stateless, Arthur's in-memory Python REPL session, Chromium browser instance, cookies, and open tabs remain fully persistent on the server.
+
+#### Starting Stateless Streamable HTTP:
+```bash
+# Start server on remote host (listening on 0.0.0.0:8000)
+uv run arthur mcp --transport streamable-http --stateless --host 0.0.0.0 --port 8000
+```
+
+#### Client Configuration:
+```json
+{
+  "mcpServers": {
+    "arthur": {
+      "url": "http://remote-server-ip:8000/mcp"
+    }
+  }
+}
+```
+
+---
+
+### 2. SSH Stdio Tunneling (Zero-Port Remote Access)
+
+Run Arthur securely over SSH without opening public firewall ports:
+
 ```json
 {
   "mcpServers": {
@@ -265,26 +295,22 @@ Run Arthur over SSH without exposing ports:
 }
 ```
 
-### 2. Streamable HTTP (`/mcp`)
-Ideal for reverse proxies (Nginx, Cloudflare Tunnels, Kubernetes):
-```bash
-uv run arthur mcp --transport streamable-http
-```
-- **Endpoint**: `http://<host>:8000/mcp`
-- **Stateless HTTP Mode**: Highly resilient over networks with intermittent connection drops.
+---
 
 ### 3. Server-Sent Events (`/sse`)
+
 For legacy MCP clients requiring standard SSE endpoints:
+
 ```bash
-uv run arthur mcp --transport sse
+uv run arthur mcp --transport sse --host 0.0.0.0 --port 8000
 ```
 - **Endpoint**: `http://<host>:8000/sse`
 
 ---
 
-## 🧪 Testing & Development
+## Testing & Development
 
-Run the comprehensive test suite (which validates CDP WebSocket transport, headless Chromium lifecycle, in-page DOM operations, and persistent REPL execution):
+Run the test suite to validate CDP WebSocket transport, headless Chromium lifecycle, in-page DOM operations, and persistent REPL execution:
 
 ```bash
 # Run pytest test suite
@@ -296,6 +322,6 @@ uv run mypy src
 
 ---
 
-## 📄 License
+## License
 
 This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.

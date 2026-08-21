@@ -71,11 +71,31 @@ def create_mcp_server(
     return server
 
 
-def run_mcp_server(transport: str = "stdio") -> None:
+def run_mcp_server(
+    transport: str = "stdio",
+    host: str = "127.0.0.1",
+    port: int = 8000,
+    stateless: bool = False,
+) -> None:
     """Run FastMCP server."""
     server = create_mcp_server()
-    server.run(transport=transport)  # type: ignore[arg-type]
+    if transport == "streamable-http":
+        server.run(
+            transport=transport,
+            host=host,
+            port=port,
+            stateless_http=stateless,
+        )  # type: ignore[arg-type]
+    elif transport == "sse":
+        server.run(
+            transport=transport,
+            host=host,
+            port=port,
+        )  # type: ignore[arg-type]
+    else:
+        server.run(transport=transport)  # type: ignore[arg-type]
 
 
 if __name__ == "__main__":
     run_mcp_server()
+

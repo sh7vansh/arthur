@@ -25,6 +25,24 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["stdio", "sse", "streamable-http"],
         help="MCP transport protocol (default: stdio)",
     )
+    mcp_parser.add_argument(
+        "--host",
+        type=str,
+        default="127.0.0.1",
+        help="Host interface to bind HTTP/SSE server (default: 127.0.0.1)",
+    )
+    mcp_parser.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        help="Port number to bind HTTP/SSE server (default: 8000)",
+    )
+    mcp_parser.add_argument(
+        "--stateless",
+        action="store_true",
+        default=False,
+        help="Enable stateless HTTP mode for streamable-http (recommended for remote/cloud deployments)",
+    )
 
     # REPL command
     repl_parser = subparsers.add_parser("repl", help="Run Python REPL session")
@@ -84,7 +102,12 @@ def main(argv: Optional[List[str]] = None) -> None:
     args = parser.parse_args(argv)
 
     if args.command == "mcp":
-        run_mcp_server(transport=args.transport)
+        run_mcp_server(
+            transport=args.transport,
+            host=args.host,
+            port=args.port,
+            stateless=args.stateless,
+        )
     elif args.command == "repl":
         run_repl(code=args.code, file_path=args.file)
     else:
