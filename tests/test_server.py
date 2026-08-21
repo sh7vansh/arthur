@@ -50,3 +50,16 @@ def test_cli_parser():
     args_repl_file = parser.parse_args(["repl", "test.py"])
     assert args_repl_file.command == "repl"
     assert args_repl_file.file == "test.py"
+
+
+def test_server_constants_and_resources():
+    from arthur.server import API_DOCS, WORKFLOW_GUIDE, TOOL_DESCRIPTION
+
+    assert "Arthur - Headless Chromium Runtime API Reference" in API_DOCS
+    assert "1. Orientation:" in TOOL_DESCRIPTION
+    assert "Fast Native Media Control" in API_DOCS
+    assert "Arthur Automation Workflow" in WORKFLOW_GUIDE
+
+    session = PythonReplSession()
+    server = create_mcp_server(session)
+    assert server is not None

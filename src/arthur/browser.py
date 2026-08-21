@@ -299,41 +299,259 @@ class TabManager:
                 self._tabs[target_id]["title"] = title
 
 
+class TabMedia:
+    """Fast-path media controller attached to a Tab instance.
+
+    Provides zero-DOM-overhead media control for HTML5 <video> / <audio> elements
+    and the browser MediaSession API. Directly penetrates open shadow roots (e.g.
+    YouTube, Spotify, Netflix web players) without generating expensive DOM snapshots.
+
+    Example:
+        >>> # Check playback state and metadata
+        >>> print(browser.media.status())
+        >>> 
+        >>> # Toggle play/pause
+        >>> browser.media.toggle()
+        >>> 
+        >>> # Relative seek (+15s forward or -10s backward)
+        >>> browser.media.seek(15.0)
+        >>> 
+        >>> # Set volume level (0.0 to 1.0)
+        >>> browser.media.set_volume(0.8)
+    """
+
+    _FIND_MEDIA_JS = """
+    function findMediaElement(root = document) {
+        let el = root.querySelector('video, audio');
+        if (el) return el;
+        const all = root.querySelectorAll('*');
+        for (const node of all) {
+            if (node.shadowRoot) {
+                const nested = findMediaElement(node.shadowRoot);
+                if (nested) return nested;
+            }
+        }
+        return null;
+    }
+    """
+
+    def __init__(self, tab: "Tab"):
+        self._tab = tab
+
+    def status(self) -> Dict[str, Any]:
+        """Fetch real-time media player state via HTML5 Video/Audio & MediaSession APIs.
+
+        Returns:
+            Dict containing `found` (bool), `paused` (bool), `currentTime` (float),
+            `duration` (float), `volume` (float), `muted` (bool), `title` (str),
+            `artist` (str), `album` (str), and `playbackState` ('playing', 'paused', 'none').
+
+        Example:
+            >>> state = browser.media.status()
+            >>> print(f"Now playing: {state.get('title')} (paused: {state.get('paused')})")
+        """
+        js = f"""
+        (() => {{
+            {self._FIND_MEDIA_JS}
+
+            const media = findMediaElement();
+            const session = navigator.mediaSession;
+            return {{
+                found: !!media,
+                paused: media ? media.paused : null,
+                currentTime: media ? media.currentTime : null,
+                duration: media ? media.duration : null,
+                volume: media ? media.volume : null,
+                muted: media ? media.muted : null,
+                title: session?.metadata?.title || document.title,
+                artist: session?.metadata?.artist || "",
+                album: session?.metadata?.album || "",
+                playbackState: session?.playbackState || (media ? (media.paused ? "paused" : "playing") : "none")
+            }};
+        }})()
+        """
+        res = self._tab.eval_js(js)
+        return res if isinstance(res, dict) else {}
+
+    def toggle(self) -> Dict[str, Any]:
+        """Toggle play/pause on the active media element.
+
+        Returns:
+            Dict with `success` (bool) and `action` ('played' or 'paused').
+
+        Example:
+            >>> browser.media.toggle()
+        """
+        js = f"""
+        (() => {{
+            {self._FIND_MEDIA_JS}
+            const media = findMediaElement();
+            if (!media) return {{success: false, error: "No media element found"}};
+            if (media.paused) {{
+                media.play();
+                return {{success: true, action: "played"}};
+            }} else {{
+                media.pause();
+                return {{success: true, action: "paused"}};
+            }}
+        }})()
+        """
+        res = self._tab.eval_js(js)
+        return res if isinstance(res, dict) else {"success": False, "error": "Evaluation failed"}
+
+    def play(self) -> Dict[str, Any]:
+        """Resume playback on the active media element.
+
+        Example:
+            >>> browser.media.play()
+        """
+        js = f"""
+        (() => {{
+            {self._FIND_MEDIA_JS}
+            const v = findMediaElement();
+            if (v) {{ v.play(); return {{success: true}}; }}
+            return {{success: false, error: "No media element found"}};
+        }})()
+        """
+        res = self._tab.eval_js(js)
+        return res if isinstance(res, dict) else {"success": False, "error": "Evaluation failed"}
+
+    def pause(self) -> Dict[str, Any]:
+        """Pause playback on the active media element.
+
+        Example:
+            >>> browser.media.pause()
+        """
+        js = f"""
+        (() => {{
+            {self._FIND_MEDIA_JS}
+            const v = findMediaElement();
+            if (v) {{ v.pause(); return {{success: true}}; }}
+            return {{success: false, error: "No media element found"}};
+        }})()
+        """
+        res = self._tab.eval_js(js)
+        return res if isinstance(res, dict) else {"success": False, "error": "Evaluation failed"}
+
+    def seek(self, seconds: float) -> Dict[str, Any]:
+        """Seek relative (+/- seconds) or step playback time.
+
+        Args:
+            seconds: Relative time delta in seconds (e.g. +15.0 to skip ahead, -10.0 to rewind).
+
+        Returns:
+            Dict with `success` (bool) and updated `currentTime` (float).
+
+        Example:
+            >>> browser.media.seek(15.0)  # Skip 15s forward
+            >>> browser.media.seek(-10.0) # Rewind 10s
+        """
+        js = f"""
+        (() => {{
+            {self._FIND_MEDIA_JS}
+            const v = findMediaElement();
+            if (!v) return {{success: false, error: "No media element found"}};
+            v.currentTime += {float(seconds)};
+            return {{success: true, currentTime: v.currentTime}};
+        }})()
+        """
+        res = self._tab.eval_js(js)
+        return res if isinstance(res, dict) else {"success": False, "error": "Evaluation failed"}
+
+    def set_volume(self, volume: float) -> Dict[str, Any]:
+        """Set media volume level between 0.0 (muted) and 1.0 (max).
+
+        Args:
+            volume: Float volume value from 0.0 to 1.0.
+
+        Returns:
+            Dict with `success` (bool) and updated `volume` (float).
+
+        Example:
+            >>> browser.media.set_volume(0.75)
+        """
+        vol = max(0.0, min(1.0, float(volume)))
+        js = f"""
+        (() => {{
+            {self._FIND_MEDIA_JS}
+            const v = findMediaElement();
+            if (v) {{ v.volume = {vol}; v.muted = false; return {{success: true, volume: v.volume}}; }}
+            return {{success: false, error: "No media element found"}};
+        }})()
+        """
+        res = self._tab.eval_js(js)
+        return res if isinstance(res, dict) else {"success": False, "error": "Evaluation failed"}
+
+
 class Tab:
-    """Synchronous representation of an active browser tab."""
+    """Scoped synchronous representation of an active browser tab.
+
+    Provides high-level DOM interactions, Ref-ID resolution, navigation,
+    and media fast-paths scoped to a single browser tab.
+
+    Example:
+        >>> tab = browser.active_tab
+        >>> print(tab.snapshot())
+        >>> tab.type(2, "Documentation", press_enter=True)
+        >>> tab.wait_for_url(r"/docs")
+        >>> data = tab.get_text(3)
+    """
 
     def __init__(self, runner: _AsyncCDPRunner, tab_manager: TabManager, target_id: str):
         self._runner = runner
         self._tab_manager = tab_manager
         self._target_id = target_id
+        self._media_controller: Optional[TabMedia] = None
 
     @property
     def target_id(self) -> str:
+        """Target ID assigned by Chromium CDP."""
         return self._target_id
 
     @property
     def id(self) -> int:
+        """Sequential integer tab ID assigned by Arthur."""
         with self._tab_manager._tabs_lock:
             info = self._tab_manager._tabs.get(self._target_id)
             return info["id"] if info else 0
 
     @property
     def url(self) -> str:
+        """Current URL of the tab."""
         with self._tab_manager._tabs_lock:
             info = self._tab_manager._tabs.get(self._target_id)
             return info.get("url", "") if info else ""
 
     @property
     def title(self) -> str:
+        """Current document title of the tab."""
         with self._tab_manager._tabs_lock:
             info = self._tab_manager._tabs.get(self._target_id)
             return info.get("title", "") if info else ""
+
+    @property
+    def media(self) -> TabMedia:
+        """Fast-path media controller for HTML5 audio/video and MediaSession APIs."""
+        if self._media_controller is None:
+            self._media_controller = TabMedia(self)
+        return self._media_controller
 
     def _ensure_session_id(self) -> str:
         return self._tab_manager.ensure_session_id(self._target_id)
 
     def navigate(self, url: str, timeout: float = 30.0) -> str:
-        """Navigate tab to URL and wait for page load."""
+        """Navigate tab to URL and wait for page load lifecycle.
+
+        Args:
+            url: Web address to navigate to (e.g. "https://example.com").
+            timeout: Maximum seconds to wait for page load. Default is 30.0.
+
+        Returns:
+            Resolved current URL after navigation.
+
+        Example:
+            >>> browser.navigate("https://example.com")
+        """
         session_id = self._ensure_session_id()
 
         async def _nav() -> str:
@@ -369,7 +587,14 @@ class Tab:
         return str(self._runner.run_coro(_nav(), timeout=timeout + 5.0))
 
     def snapshot(self) -> str:
-        """Generate semantic DOM snapshot outline."""
+        """Generate semantic DOM snapshot outline with deterministic [#N] Ref-IDs.
+
+        Returns:
+            Formatted semantic accessibility tree string.
+
+        Example:
+            >>> print(browser.snapshot())
+        """
         session_id = self._ensure_session_id()
 
         async def _snap() -> str:
@@ -387,7 +612,21 @@ class Tab:
         button: str = "left",
         count: int = 1,
     ) -> Dict[str, Any]:
-        """Click element by Ref-ID or CSS selector."""
+        """Click element by Ref-ID (integer or '[#N]') or CSS selector.
+
+        Args:
+            target: Element locator (e.g. `1`, `"[#1]"`, or `"button.submit"`).
+            button: Mouse button ('left', 'middle', 'right'). Default is 'left'.
+            count: Number of clicks (1 for single click, 2 for double click).
+
+        Returns:
+            CDP response dictionary.
+
+        Example:
+            >>> browser.click(1)
+            >>> browser.click("[#2]")
+            >>> browser.click("button#submit-btn")
+        """
         session_id = self._ensure_session_id()
         return self._runner.run_coro(  # type: ignore[no-any-return]
             cdp_click(
@@ -406,7 +645,20 @@ class Tab:
         clear: bool = True,
         press_enter: bool = False,
     ) -> Dict[str, Any]:
-        """Type text into element by Ref-ID or CSS selector."""
+        """Type text into an input element.
+
+        Args:
+            target: Element locator (e.g. `2`, `"[#2]"`, or `"input[name='q']"`).
+            text: String text to type into the element.
+            clear: If True, selects and clears existing content before typing.
+            press_enter: If True, sends an 'Enter' keypress after typing.
+
+        Returns:
+            CDP response dictionary.
+
+        Example:
+            >>> browser.type(2, "search query", press_enter=True)
+        """
         session_id = self._ensure_session_id()
         return self._runner.run_coro(  # type: ignore[no-any-return]
             cdp_type(
@@ -420,14 +672,35 @@ class Tab:
         )
 
     def select(self, target: Union[int, str], value: str) -> Dict[str, Any]:
-        """Select option in <select> dropdown."""
+        """Select an option in a dropdown (<select>) element.
+
+        Args:
+            target: Element locator for the <select> element.
+            value: Option value or label text to select.
+
+        Returns:
+            CDP response dictionary.
+
+        Example:
+            >>> browser.select(5, "Option B")
+        """
         session_id = self._ensure_session_id()
         return self._runner.run_coro(  # type: ignore[no-any-return]
             cdp_select(self._runner.cdp, target, value, session_id=session_id)
         )
 
     def hover(self, target: Union[int, str]) -> Dict[str, Any]:
-        """Hover over element."""
+        """Hover mouse cursor over target element.
+
+        Args:
+            target: Element locator (e.g. `8`, `"[#8]"`, or `".dropdown-toggle"`).
+
+        Returns:
+            CDP response dictionary.
+
+        Example:
+            >>> browser.hover(8)
+        """
         session_id = self._ensure_session_id()
         return self._runner.run_coro(  # type: ignore[no-any-return]
             cdp_hover(self._runner.cdp, target, session_id=session_id)
@@ -439,14 +712,38 @@ class Tab:
         y: int = 500,
         target: Optional[Union[int, str]] = None,
     ) -> Dict[str, Any]:
-        """Scroll viewport or target element."""
+        """Scroll viewport or a specific scrollable container element.
+
+        Args:
+            x: Horizontal pixel delta to scroll. Default is 0.
+            y: Vertical pixel delta to scroll. Default is 500.
+            target: Optional container locator to scroll within.
+
+        Returns:
+            CDP response dictionary.
+
+        Example:
+            >>> browser.scroll(y=800)
+            >>> browser.scroll(y=300, target="[#feed-container]")
+        """
         session_id = self._ensure_session_id()
         return self._runner.run_coro(  # type: ignore[no-any-return]
             cdp_scroll(self._runner.cdp, x=x, y=y, target=target, session_id=session_id)
         )
 
     def eval_js(self, expression: str) -> Any:
-        """Evaluate arbitrary JavaScript in page context."""
+        """Evaluate arbitrary JavaScript expression directly in the tab context.
+
+        Args:
+            expression: JavaScript expression string to evaluate.
+
+        Returns:
+            JSON-serializable result of the JavaScript evaluation.
+
+        Example:
+            >>> title = browser.eval_js("document.title")
+            >>> items = browser.eval_js("Array.from(document.querySelectorAll('h3')).map(e => e.innerText)")
+        """
         session_id = self._ensure_session_id()
 
         async def _eval() -> Any:
@@ -468,7 +765,17 @@ class Tab:
         return self._runner.run_coro(_eval())
 
     def screenshot(self, format: str = "png") -> bytes:
-        """Capture screenshot of the viewport."""
+        """Capture screenshot of the viewport as raw bytes.
+
+        Args:
+            format: Image format ('png' or 'jpeg'). Default is 'png'.
+
+        Returns:
+            Raw image bytes.
+
+        Example:
+            >>> png_data = browser.screenshot()
+        """
         session_id = self._ensure_session_id()
 
         async def _ss() -> bytes:
@@ -483,12 +790,33 @@ class Tab:
         return bytes(self._runner.run_coro(_ss()))
 
     def get_text(self, target: Union[int, str]) -> str:
-        """Get text content of element."""
+        """Extract inner text content of an element.
+
+        Args:
+            target: Element locator (e.g. `3`, `"[#3]"`, or `"h1"`).
+
+        Returns:
+            Extracted text content string.
+
+        Example:
+            >>> text = browser.get_text(3)
+        """
         session_id = self._ensure_session_id()
         return str(self._runner.run_coro(dom_get_text(self._runner.cdp, target, session_id=session_id)))
 
     def get_attribute(self, target: Union[int, str], name: str) -> Optional[str]:
-        """Get DOM attribute value of element."""
+        """Retrieve the value of an element DOM attribute.
+
+        Args:
+            target: Element locator (e.g. `3`, `"[#3]"`, or `"a.download"`).
+            name: Name of the attribute (e.g. 'href', 'src', 'data-id').
+
+        Returns:
+            Attribute value as a string, or None if not found.
+
+        Example:
+            >>> link = browser.get_attribute(3, "href")
+        """
         session_id = self._ensure_session_id()
         return self._runner.run_coro(dom_get_attribute(self._runner.cdp, target, name, session_id=session_id))  # type: ignore[no-any-return]
 
@@ -498,7 +826,19 @@ class Tab:
         state: str = "visible",
         timeout: float = 10.0,
     ) -> bool:
-        """Wait for element to satisfy condition ('visible', 'attached', 'hidden')."""
+        """Synchronously wait for an element to reach a target lifecycle state.
+
+        Args:
+            target: Element locator (e.g. `10`, `"[#10]"`, or `"#results"`).
+            state: Expected condition ('visible', 'attached', 'hidden'). Default is 'visible'.
+            timeout: Maximum seconds to wait before timing out. Default is 10.0.
+
+        Returns:
+            True if element reached condition within timeout.
+
+        Example:
+            >>> browser.wait_for(10, state="visible", timeout=5.0)
+        """
         session_id = self._ensure_session_id()
         start = time.time()
 
@@ -538,7 +878,18 @@ class Tab:
         )
 
     def wait_for_url(self, pattern: str, timeout: float = 15.0) -> str:
-        """Wait until page URL matches regex pattern."""
+        r"""Synchronously wait until the page URL matches a regex pattern.
+
+        Args:
+            pattern: Regex pattern to match against current URL.
+            timeout: Maximum seconds to wait before timing out. Default is 15.0.
+
+        Returns:
+            Matching current URL string.
+
+        Example:
+            >>> browser.wait_for_url(r"github\.com/settings")
+        """
         regex = re.compile(pattern)
         start = time.time()
 
@@ -565,9 +916,62 @@ class Tab:
 
         self._runner.run_coro(_close_tab())
 
+    def help(self) -> str:
+        """Return a formatted quick reference of available SDK methods and examples."""
+        return (
+            "Arthur Browser SDK Quick Reference:\n"
+            "====================================\n"
+            "  1. DOM Orientation:\n"
+            "     browser.snapshot()                -> Formatted semantic outline with [#N] Ref-IDs\n"
+            "     browser.url, browser.title        -> Current page URL and document title\n\n"
+            "  2. Element Interactions (Target: Ref-ID [#N], integer N, or 'css_selector'):\n"
+            "     browser.click(target, button='left', count=1)\n"
+            "     browser.type(target, 'text', clear=True, press_enter=False)\n"
+            "     browser.select(target, 'value')\n"
+            "     browser.hover(target)\n"
+            "     browser.scroll(x=0, y=500, target=None)\n\n"
+            "  3. Extraction & JavaScript Evaluation:\n"
+            "     browser.get_text(target)          -> Extracted text content\n"
+            "     browser.get_attribute(target, 'href') -> Attribute value string\n"
+            "     browser.eval_js('document.title') -> Evaluate JS in page context\n"
+            "     browser.screenshot()              -> Raw PNG screenshot bytes\n\n"
+            "  4. Tabs & Navigation:\n"
+            "     browser.navigate('https://...')   -> Navigate active tab and wait for load\n"
+            "     browser.new_tab('https://...')    -> Open new tab\n"
+            "     browser.tabs                      -> List all open Tab handles\n"
+            "     browser.active_tab                -> Current active Tab handle\n"
+            "     browser.get_tab(tab_id)           -> Scoped Tab handle by ID (or browser.tab(id))\n"
+            "     browser.close_tab(tab_id)         -> Close tab\n\n"
+            "  5. Synchronization & Waiting:\n"
+            "     browser.wait_for(target, state='visible', timeout=10.0)\n"
+            "     browser.wait_for_url(r'pattern', timeout=15.0)\n\n"
+            "  6. Media Fast-Paths (Zero-DOM Shadow-Root Penetration):\n"
+            "     browser.media.status()            -> Media state, player metadata, playbackState\n"
+            "     browser.media.toggle()            -> Toggle play/pause\n"
+            "     browser.media.play(), pause()     -> Direct playback controls\n"
+            "     browser.media.seek(15.0)          -> Relative seek (+/- seconds)\n"
+            "     browser.media.set_volume(0.8)     -> Set volume level (0.0 to 1.0)\n"
+        )
+
 
 class Browser:
-    """Synchronous Arthur Browser runtime instance and facade."""
+    """Synchronous Arthur Browser runtime instance and facade.
+
+    Provides procedural control over headless Chromium, multi-tab lifecycle,
+    semantic snapshotting, synthetic interactions, and fast media control.
+
+    Canonical Composition Lifecycle:
+        >>> from arthur.browser import browser
+        >>> # 1. Navigate to target
+        >>> browser.navigate("https://example.com")
+        >>> # 2. Orient via semantic snapshot
+        >>> print(browser.snapshot())
+        >>> # 3. Interact via discovered Ref-ID
+        >>> browser.type(2, "Hello World", press_enter=True)
+        >>> # 4. Synchronize and extract
+        >>> browser.wait_for(5)
+        >>> print(browser.get_text(5))
+    """
 
     def __init__(self, executable_path: Optional[str] = None):
         self._executable_path = executable_path
@@ -596,22 +1000,41 @@ class Browser:
 
     @property
     def target_id(self) -> str:
+        """Target ID of the active tab."""
         return self.active_tab.target_id
 
     @property
     def id(self) -> int:
+        """Sequential integer ID of the active tab."""
         return self.active_tab.id
 
     @property
     def url(self) -> str:
+        """Current URL of the active tab."""
         return self.active_tab.url
 
     @property
     def title(self) -> str:
+        """Current document title of the active tab."""
         return self.active_tab.title
 
+    @property
+    def media(self) -> TabMedia:
+        """Fast-path media controller for HTML5 audio/video on the active tab."""
+        return self.active_tab.media
+
     def get_tab(self, tab_id: Union[int, str]) -> Tab:
-        """Get tab by sequential numeric ID or target ID."""
+        """Get tab by sequential numeric ID or target ID.
+
+        Args:
+            tab_id: Sequential integer ID (e.g. 1) or CDP target ID.
+
+        Returns:
+            Tab handle instance.
+
+        Example:
+            >>> tab = browser.get_tab(1)
+        """
         return self._ensure_runner().tab_manager.get_tab(tab_id)
 
     def tab(self, tab_id: Union[int, str]) -> Tab:
@@ -619,15 +1042,32 @@ class Browser:
         return self.get_tab(tab_id)
 
     def new_tab(self, url: Optional[str] = None) -> Tab:
-        """Open a new browser tab and optionally navigate to URL."""
+        """Open a new browser tab and optionally navigate to URL.
+
+        Args:
+            url: Optional URL to navigate to immediately upon creation.
+
+        Returns:
+            New Tab instance.
+
+        Example:
+            >>> new_tab = browser.new_tab("https://example.com")
+        """
         return self._ensure_runner().tab_manager.create_tab(url)
 
     def close_tab(self, tab_id: Union[int, str]) -> None:
-        """Close specific tab by ID."""
+        """Close specific tab by ID.
+
+        Args:
+            tab_id: Sequential integer ID or target ID of the tab to close.
+
+        Example:
+            >>> browser.close_tab(2)
+        """
         self._ensure_runner().tab_manager.close_tab(tab_id)
 
     def close(self) -> None:
-        """Shut down browser and clean up."""
+        """Shut down browser process and clean up resources."""
         with self._init_lock:
             if self._runner_instance is not None:
                 self._runner_instance.close()
@@ -635,9 +1075,11 @@ class Browser:
 
     # Forwarded active-tab operations
     def navigate(self, url: str, timeout: float = 30.0) -> str:
+        """Navigate active tab to URL and wait for page load."""
         return self.active_tab.navigate(url, timeout=timeout)
 
     def snapshot(self) -> str:
+        """Generate semantic DOM snapshot outline on the active tab."""
         return self.active_tab.snapshot()
 
     def click(
@@ -646,6 +1088,7 @@ class Browser:
         button: str = "left",
         count: int = 1,
     ) -> Dict[str, Any]:
+        """Click element on active tab by Ref-ID or CSS selector."""
         return self.active_tab.click(target, button=button, count=count)
 
     def type(
@@ -655,12 +1098,15 @@ class Browser:
         clear: bool = True,
         press_enter: bool = False,
     ) -> Dict[str, Any]:
+        """Type text into element on active tab."""
         return self.active_tab.type(target, text, clear=clear, press_enter=press_enter)
 
     def select(self, target: Union[int, str], value: str) -> Dict[str, Any]:
+        """Select dropdown option on active tab."""
         return self.active_tab.select(target, value)
 
     def hover(self, target: Union[int, str]) -> Dict[str, Any]:
+        """Hover over element on active tab."""
         return self.active_tab.hover(target)
 
     def scroll(
@@ -669,18 +1115,23 @@ class Browser:
         y: int = 500,
         target: Optional[Union[int, str]] = None,
     ) -> Dict[str, Any]:
+        """Scroll viewport or container on active tab."""
         return self.active_tab.scroll(x=x, y=y, target=target)
 
     def eval_js(self, expression: str) -> Any:
+        """Evaluate arbitrary JavaScript in active tab context."""
         return self.active_tab.eval_js(expression)
 
     def screenshot(self, format: str = "png") -> bytes:
+        """Capture viewport screenshot on active tab."""
         return self.active_tab.screenshot(format=format)
 
     def get_text(self, target: Union[int, str]) -> str:
+        """Get text content of element on active tab."""
         return self.active_tab.get_text(target)
 
     def get_attribute(self, target: Union[int, str], name: str) -> Optional[str]:
+        """Get DOM attribute value on active tab."""
         return self.active_tab.get_attribute(target, name)
 
     def wait_for(
@@ -689,10 +1140,16 @@ class Browser:
         state: str = "visible",
         timeout: float = 10.0,
     ) -> bool:
+        """Wait for element on active tab to reach condition."""
         return self.active_tab.wait_for(target, state=state, timeout=timeout)
 
     def wait_for_url(self, pattern: str, timeout: float = 15.0) -> str:
+        """Wait for active tab URL to match pattern."""
         return self.active_tab.wait_for_url(pattern, timeout=timeout)
+
+    def help(self) -> str:
+        """Return formatted quick reference of available SDK methods."""
+        return self.active_tab.help()
 
 
 # Default global browser singleton

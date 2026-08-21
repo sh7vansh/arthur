@@ -176,11 +176,20 @@ png_bytes = browser.screenshot()
 text = browser.get_text(1)
 attr = browser.get_attribute(1, "data-custom")
 
-# Multi-Tab Control
+# Fast Native Media Control (Zero-DOM)
+state = browser.media.status()           # HTML5 media state & player metadata
+browser.media.toggle()                   # Toggle play/pause
+browser.media.play()                     # Resume playback
+browser.media.pause()                    # Pause playback
+browser.media.seek(15.0)                 # Seek relative seconds (+15s / -10s)
+browser.media.set_volume(0.8)            # Set volume level (0.0 to 1.0)
+
+# Multi-Tab Control & Help
 new_tab = browser.new_tab("https://google.com")
 all_tabs = browser.tabs
 active = browser.active_tab
 browser.close_tab(2)
+print(browser.help())                    # Built-in formatted SDK quick reference
 ```
 
 ---
@@ -188,8 +197,10 @@ browser.close_tab(2)
 ## Key Features
 
 - **Semantic Ref-ID Snapshots**: Generates compact, token-efficient accessible DOM trees with assigned numbers (`[#1]`, `[#2]`), avoiding brittle XPath or long CSS selectors.
+- **Fast Media Controller (`browser.media`)**: Zero-DOM media playback manipulation that penetrates open Shadow DOM roots without expensive snapshot recalculation.
 - **Persistent Python REPL**: State, variables, imports, and custom functions persist across agent tool calls.
 - **Single-Turn Self-Healing**: Automatically attaches a diagnostic DOM snapshot (`[diagnostic_auto_snapshot]`) and fuzzy suggestions whenever an error occurs, allowing agents to self-heal in a single turn.
+- **MCP Resources & Prompts**: Built-in MCP resources (`arthur://docs/api`, `arthur://docs/workflow`) and structured prompts (`browser_automation`, `media_control`) for intelligent agent onboarding.
 - **Token Budgeting & Defanging**: Truncates large outputs to prevent context window explosion and sanitizes tracking image beacons (`[IMAGE_BLOCKED]`).
 
 ---

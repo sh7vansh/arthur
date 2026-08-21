@@ -153,3 +153,50 @@ def test_browser_tab_manager_decoupled(browser: Browser):
     assert isinstance(active, Tab)
     assert active.get_text("#subtitle") == "Subtitle Heading"
     assert active.get_attribute("#subtitle", "data-version") == "1.0"
+
+
+def test_browser_help(browser: Browser):
+    help_text = browser.help()
+    assert "Arthur Browser SDK Quick Reference:" in help_text
+    assert "DOM Orientation:" in help_text
+    assert "Element Interactions" in help_text
+    assert "Media Fast-Paths" in help_text
+    assert browser.active_tab.help() == help_text
+
+
+def test_browser_media_controller(browser: Browser):
+    html = """
+    <!DOCTYPE html>
+    <html>
+    <head><title>Media Test</title></head>
+    <body>
+        <h1>Media Controller Test</h1>
+        <audio id="audio" src="data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA" controls></audio>
+    </body>
+    </html>
+    """
+    data_url = "data:text/html;charset=utf-8," + urllib.parse.quote(html)
+    browser.navigate(data_url)
+
+    # Check status
+    st = browser.media.status()
+    assert isinstance(st, dict)
+    assert st.get("found") is True
+    assert st.get("paused") is True
+
+    # Test set_volume
+    vol_res = browser.media.set_volume(0.65)
+    assert vol_res.get("success") is True
+    assert vol_res.get("volume") == pytest.approx(0.65, abs=0.01)
+
+    # Test seek
+    seek_res = browser.media.seek(5.0)
+    assert seek_res.get("success") is True
+
+    # Test toggle / play / pause
+    tog_res = browser.media.toggle()
+    assert tog_res.get("success") is True
+
+    pause_res = browser.media.pause()
+    assert pause_res.get("success") is True
+

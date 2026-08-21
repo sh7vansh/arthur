@@ -375,4 +375,5 @@ class PythonReplSession:
             "__builtins__": builtins,
             "_": None,
             "browser": self.browser,
+            "chrome": self.browser,
         }
