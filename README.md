@@ -45,17 +45,17 @@ Headless Chromium (--headless=new)
 
 ### 1. Instant Zero-Clone Execution via `uvx`
 
-No repository cloning or manual environment management is required:
+Arthur is published on PyPI as `arthur-runtime`. No cloning or manual environment management is required:
 
 ```bash
-# Run MCP Server (stdio transport)
-uvx --from git+https://github.com/sh7vansh/arthur arthur mcp
+# Run FastMCP Server (stdio transport)
+uvx arthur-runtime mcp
 
 # Run Interactive Terminal REPL
-uvx --from git+https://github.com/sh7vansh/arthur arthur repl
+uvx arthur-runtime repl
 
 # Run One-Shot Command
-uvx --from git+https://github.com/sh7vansh/arthur arthur repl -c "browser.navigate('https://example.com'); print(browser.snapshot())"
+uvx arthur-runtime repl -c "browser.navigate('https://example.com'); print(browser.snapshot())"
 ```
 
 ---
@@ -71,9 +71,7 @@ Add Arthur to your MCP settings configuration (e.g. `claude_desktop_config.json`
     "arthur": {
       "command": "uvx",
       "args": [
-        "--from",
-        "git+https://github.com/sh7vansh/arthur",
-        "arthur",
+        "arthur-runtime",
         "mcp"
       ]
     }
@@ -247,7 +245,7 @@ Run Arthur securely over SSH without opening public firewall ports:
       "command": "ssh",
       "args": [
         "user@remote-host",
-        "uvx --from git+https://github.com/sh7vansh/arthur arthur mcp"
+        "uvx arthur-runtime mcp"
       ]
     }
   }
