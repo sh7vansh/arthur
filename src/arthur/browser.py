@@ -2,7 +2,6 @@
 
 import asyncio
 import base64
-import json
 import logging
 import re
 import threading
@@ -12,6 +11,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 from arthur.cdp import CDPClient
 from arthur.dom import (
     DOMSnapshotResult,
+    dom_get_attribute,
+    dom_get_text,
     generate_snapshot,
     get_dom_metrics,
     resolve_target_coordinates,
@@ -48,16 +49,10 @@ class _AsyncCDPRunner:
         )
         self.instance: Optional[ChromiumInstance] = None
         self.cdp = CDPClient()
+        self.tab_manager = TabManager(self)
         self._started = threading.Event()
         self._closed = False
         self._init_error: Optional[Exception] = None
-
-        # Tab management
-        self._tabs_lock = threading.RLock()
-        self._tab_seq = 0
-        # target_id -> tab_info dict
-        self._tabs: Dict[str, Dict[str, Any]] = {}
-        self._active_target_id: Optional[str] = None
 
         self.thread.start()
         self._started.wait(timeout=20.0)
@@ -82,10 +77,10 @@ class _AsyncCDPRunner:
         self.instance = launch_chromium(executable_path=self.executable_path)
         await self.cdp.connect(self.instance.ws_url)
 
-        # Listen for target lifecycle events
-        self.cdp.on("Target.targetCreated", self._on_target_created)
-        self.cdp.on("Target.targetDestroyed", self._on_target_destroyed)
-        self.cdp.on("Target.targetInfoChanged", self._on_target_info_changed)
+        # Connect tab manager to CDP target lifecycle events
+        self.cdp.on("Target.targetCreated", self.tab_manager._on_target_created)
+        self.cdp.on("Target.targetDestroyed", self.tab_manager._on_target_destroyed)
+        self.cdp.on("Target.targetInfoChanged", self.tab_manager._on_target_info_changed)
 
         await self.cdp.call("Target.setDiscoverTargets", {"discover": True})
 
@@ -99,19 +94,12 @@ class _AsyncCDPRunner:
             first_target = page_targets[0]
             target_id = first_target["targetId"]
             session_id = await self.cdp.attach_to_target(target_id)
-            with self._tabs_lock:
-                if target_id not in self._tabs:
-                    self._tab_seq += 1
-                    self._tabs[target_id] = {
-                        "id": self._tab_seq,
-                        "target_id": target_id,
-                        "session_id": session_id,
-                        "url": first_target.get("url", "about:blank"),
-                        "title": first_target.get("title", ""),
-                    }
-                else:
-                    self._tabs[target_id]["session_id"] = session_id
-                self._active_target_id = target_id
+            self.tab_manager.register_initial_target(
+                target_id=target_id,
+                session_id=session_id,
+                url=first_target.get("url", "about:blank"),
+                title=first_target.get("title", ""),
+            )
             await self.cdp.call("Page.enable", session_id=session_id)
             await self.cdp.call("Runtime.enable", session_id=session_id)
 
@@ -127,6 +115,65 @@ class _AsyncCDPRunner:
                 self.instance.close()
             except Exception:
                 pass
+
+    def run_coro(self, coro: Any, timeout: Optional[float] = None) -> Any:
+        """Run coroutine in daemon loop thread-safely."""
+        if self._closed or not self.loop.is_running():
+            raise BrowserUnavailableError("Browser background event loop is closed.")
+        future = asyncio.run_coroutine_threadsafe(coro, self.loop)
+        try:
+            return future.result(timeout=timeout)
+        except TimeoutError as e:
+            raise NavigationTimeoutError(f"Operation timed out: {e}") from e
+        except Exception:
+            raise
+
+    def close(self) -> None:
+        """Shut down background thread and browser."""
+        if self._closed:
+            return
+        self._closed = True
+        if self.loop.is_running():
+            fut = asyncio.run_coroutine_threadsafe(self._async_teardown(), self.loop)
+            try:
+                fut.result(timeout=3.0)
+            except Exception:
+                pass
+            self.loop.call_soon_threadsafe(self.loop.stop)
+        self.thread.join(timeout=3.0)
+
+
+class TabManager:
+    """Encapsulates browser tab collection, lifecycle events, and active tab state."""
+
+    def __init__(self, runner: _AsyncCDPRunner):
+        self._runner = runner
+        self._tabs_lock = threading.RLock()
+        self._tab_seq = 0
+        # target_id -> tab_info dict
+        self._tabs: Dict[str, Dict[str, Any]] = {}
+        self._active_target_id: Optional[str] = None
+
+    def register_initial_target(
+        self, target_id: str, session_id: str, url: str = "about:blank", title: str = ""
+    ) -> None:
+        with self._tabs_lock:
+            if target_id not in self._tabs:
+                self._tab_seq += 1
+                self._tabs[target_id] = {
+                    "id": self._tab_seq,
+                    "target_id": target_id,
+                    "session_id": session_id,
+                    "url": url,
+                    "title": title,
+                }
+            else:
+                self._tabs[target_id]["session_id"] = session_id
+                if url:
+                    self._tabs[target_id]["url"] = url
+                if title:
+                    self._tabs[target_id]["title"] = title
+            self._active_target_id = target_id
 
     def _on_target_created(self, params: Dict[str, Any]) -> None:
         t_info = params.get("targetInfo", {})
@@ -163,38 +210,101 @@ class _AsyncCDPRunner:
                     self._tabs[target_id]["url"] = t_info.get("url", self._tabs[target_id]["url"])
                     self._tabs[target_id]["title"] = t_info.get("title", self._tabs[target_id]["title"])
 
-    def run_coro(self, coro: Any, timeout: Optional[float] = None) -> Any:
-        """Run coroutine in daemon loop thread-safely."""
-        if self._closed or not self.loop.is_running():
-            raise BrowserUnavailableError("Browser background event loop is closed.")
-        future = asyncio.run_coroutine_threadsafe(coro, self.loop)
-        try:
-            return future.result(timeout=timeout)
-        except TimeoutError as e:
-            raise NavigationTimeoutError(f"Operation timed out: {e}") from e
-        except Exception:
-            raise
+    def list_tabs(self) -> List["Tab"]:
+        with self._tabs_lock:
+            return [Tab(self._runner, self, tid) for tid in self._tabs.keys()]
 
-    def close(self) -> None:
-        """Shut down background thread and browser."""
-        if self._closed:
-            return
-        self._closed = True
-        if self.loop.is_running():
-            fut = asyncio.run_coroutine_threadsafe(self._async_teardown(), self.loop)
+    def get_tab(self, tab_id: Union[int, str]) -> "Tab":
+        with self._tabs_lock:
+            numeric_id: Optional[int] = None
             try:
-                fut.result(timeout=3.0)
-            except Exception:
-                pass
-            self.loop.call_soon_threadsafe(self.loop.stop)
-        self.thread.join(timeout=3.0)
+                numeric_id = int(tab_id)
+            except (ValueError, TypeError):
+                numeric_id = None
+
+            for tid, info in self._tabs.items():
+                if numeric_id is not None and info["id"] == numeric_id:
+                    return Tab(self._runner, self, tid)
+                if tid == str(tab_id):
+                    return Tab(self._runner, self, tid)
+        raise BrowserUnavailableError(f"Tab matching '{tab_id}' not found.")
+
+    def get_active_tab(self) -> "Tab":
+        with self._tabs_lock:
+            if self._active_target_id and self._active_target_id in self._tabs:
+                return Tab(self._runner, self, self._active_target_id)
+            if self._tabs:
+                tid = next(iter(self._tabs.keys()))
+                self._active_target_id = tid
+                return Tab(self._runner, self, tid)
+        raise BrowserUnavailableError("No active browser tabs available.")
+
+    def create_tab(self, url: Optional[str] = None) -> "Tab":
+        async def _new() -> str:
+            res = await self._runner.cdp.call(
+                "Target.createTarget", {"url": "about:blank"}
+            )
+            target_id = str(res["targetId"])
+            sess_id = await self._runner.cdp.attach_to_target(target_id)
+            await self._runner.cdp.call("Page.enable", session_id=sess_id)
+            await self._runner.cdp.call("Runtime.enable", session_id=sess_id)
+            with self._tabs_lock:
+                if target_id not in self._tabs:
+                    self._tab_seq += 1
+                    self._tabs[target_id] = {
+                        "id": self._tab_seq,
+                        "target_id": target_id,
+                        "session_id": sess_id,
+                        "url": "about:blank",
+                        "title": "",
+                    }
+                else:
+                    self._tabs[target_id]["session_id"] = sess_id
+                self._active_target_id = target_id
+            return target_id
+
+        tid = str(self._runner.run_coro(_new()))
+        t = Tab(self._runner, self, tid)
+        if url:
+            t.navigate(url)
+        return t
+
+    def close_tab(self, tab_id: Union[int, str]) -> None:
+        t = self.get_tab(tab_id)
+        t.close()
+
+    def ensure_session_id(self, target_id: str) -> str:
+        with self._tabs_lock:
+            info = self._tabs.get(target_id)
+            if not info:
+                raise BrowserUnavailableError(f"Tab {target_id} no longer exists.")
+            if info.get("session_id"):
+                return str(info["session_id"])
+
+        async def _attach() -> str:
+            sess_id = await self._runner.cdp.attach_to_target(target_id)
+            await self._runner.cdp.call("Page.enable", session_id=sess_id)
+            await self._runner.cdp.call("Runtime.enable", session_id=sess_id)
+            with self._tabs_lock:
+                if target_id in self._tabs:
+                    self._tabs[target_id]["session_id"] = sess_id
+            return sess_id
+
+        return str(self._runner.run_coro(_attach()))
+
+    def update_tab_info(self, target_id: str, url: str, title: str) -> None:
+        with self._tabs_lock:
+            if target_id in self._tabs:
+                self._tabs[target_id]["url"] = url
+                self._tabs[target_id]["title"] = title
 
 
 class Tab:
     """Synchronous representation of an active browser tab."""
 
-    def __init__(self, runner: _AsyncCDPRunner, target_id: str):
+    def __init__(self, runner: _AsyncCDPRunner, tab_manager: TabManager, target_id: str):
         self._runner = runner
+        self._tab_manager = tab_manager
         self._target_id = target_id
 
     @property
@@ -203,49 +313,30 @@ class Tab:
 
     @property
     def id(self) -> int:
-        with self._runner._tabs_lock:
-            info = self._runner._tabs.get(self._target_id)
+        with self._tab_manager._tabs_lock:
+            info = self._tab_manager._tabs.get(self._target_id)
             return info["id"] if info else 0
 
     @property
     def url(self) -> str:
-        with self._runner._tabs_lock:
-            info = self._runner._tabs.get(self._target_id)
+        with self._tab_manager._tabs_lock:
+            info = self._tab_manager._tabs.get(self._target_id)
             return info.get("url", "") if info else ""
 
     @property
     def title(self) -> str:
-        with self._runner._tabs_lock:
-            info = self._runner._tabs.get(self._target_id)
+        with self._tab_manager._tabs_lock:
+            info = self._tab_manager._tabs.get(self._target_id)
             return info.get("title", "") if info else ""
 
     def _ensure_session_id(self) -> str:
-        """Ensure session attachment and return session_id."""
-        with self._runner._tabs_lock:
-            info = self._runner._tabs.get(self._target_id)
-            if not info:
-                raise BrowserUnavailableError(f"Tab {self._target_id} no longer exists.")
-            if info.get("session_id"):
-                return str(info["session_id"])
-
-        # Attach
-        async def _attach() -> str:
-            sess_id = await self._runner.cdp.attach_to_target(self._target_id)
-            await self._runner.cdp.call("Page.enable", session_id=sess_id)
-            await self._runner.cdp.call("Runtime.enable", session_id=sess_id)
-            with self._runner._tabs_lock:
-                if self._target_id in self._runner._tabs:
-                    self._runner._tabs[self._target_id]["session_id"] = sess_id
-            return sess_id
-
-        return str(self._runner.run_coro(_attach()))
+        return self._tab_manager.ensure_session_id(self._target_id)
 
     def navigate(self, url: str, timeout: float = 30.0) -> str:
         """Navigate tab to URL and wait for page load."""
         session_id = self._ensure_session_id()
 
         async def _nav() -> str:
-            # Set up listener for load event
             load_future: asyncio.Future[None] = self._runner.loop.create_future()
 
             def _on_load(params: Dict[str, Any]) -> None:
@@ -266,18 +357,13 @@ class Tab:
                     except asyncio.TimeoutError:
                         pass
                 else:
-                    # Give a small tick for synchronous in-memory/DOM updates
                     await asyncio.sleep(0.05)
             finally:
                 self._runner.cdp.off("Page.loadEventFired", _on_load, session_id=session_id)
                 self._runner.cdp.off("Page.domContentEventFired", _on_load, session_id=session_id)
 
-            # Update title and URL
             snap_res = await generate_snapshot(self._runner.cdp, session_id=session_id)
-            with self._runner._tabs_lock:
-                if self._target_id in self._runner._tabs:
-                    self._runner._tabs[self._target_id]["url"] = snap_res.url
-                    self._runner._tabs[self._target_id]["title"] = snap_res.title
+            self._tab_manager.update_tab_info(self._target_id, snap_res.url, snap_res.title)
             return snap_res.url
 
         return str(self._runner.run_coro(_nav(), timeout=timeout + 5.0))
@@ -290,10 +376,7 @@ class Tab:
             res: DOMSnapshotResult = await generate_snapshot(
                 self._runner.cdp, session_id=session_id
             )
-            with self._runner._tabs_lock:
-                if self._target_id in self._runner._tabs:
-                    self._runner._tabs[self._target_id]["url"] = res.url
-                    self._runner._tabs[self._target_id]["title"] = res.title
+            self._tab_manager.update_tab_info(self._target_id, res.url, res.title)
             return res.snapshot
 
         return str(self._runner.run_coro(_snap()))
@@ -402,43 +485,12 @@ class Tab:
     def get_text(self, target: Union[int, str]) -> str:
         """Get text content of element."""
         session_id = self._ensure_session_id()
-
-        async def _gt() -> str:
-            coord = await resolve_target_coordinates(
-                self._runner.cdp, target, session_id=session_id
-            )
-            return str(coord.get("text", ""))
-
-        return str(self._runner.run_coro(_gt()))
+        return str(self._runner.run_coro(dom_get_text(self._runner.cdp, target, session_id=session_id)))
 
     def get_attribute(self, target: Union[int, str], name: str) -> Optional[str]:
         """Get DOM attribute value of element."""
         session_id = self._ensure_session_id()
-
-        async def _ga() -> Optional[str]:
-            expr = f"""
-            ((target, attr) => {{
-                let el = null;
-                if (typeof target === 'number') {{
-                    el = window.__AG_REGISTRY__?.refMap?.get(target);
-                }} else if (typeof target === 'string') {{
-                    const m = target.match(/^\\[#\\s*(\\d+)\\]$/) || target.match(/^#(\\d+)$/);
-                    if (m) el = window.__AG_REGISTRY__?.refMap?.get(parseInt(m[1], 10));
-                    else el = document.querySelector(target);
-                }}
-                if (!el) return null;
-                return el.getAttribute(attr);
-            }})({json.dumps(target)}, {json.dumps(name)})
-            """
-            res = await self._runner.cdp.call(
-                "Runtime.evaluate",
-                {"expression": expr, "returnByValue": True},
-                session_id=session_id,
-            )
-            val = res.get("result", {}).get("value")
-            return str(val) if val is not None else None
-
-        return self._runner.run_coro(_ga())  # type: ignore[no-any-return]
+        return self._runner.run_coro(dom_get_attribute(self._runner.cdp, target, name, session_id=session_id))  # type: ignore[no-any-return]
 
     def wait_for(
         self,
@@ -514,7 +566,7 @@ class Tab:
         self._runner.run_coro(_close_tab())
 
 
-class Browser(Tab):
+class Browser:
     """Synchronous Arthur Browser runtime instance and facade."""
 
     def __init__(self, executable_path: Optional[str] = None):
@@ -529,47 +581,38 @@ class Browser(Tab):
             return self._runner_instance
 
     @property
-    def _runner(self) -> _AsyncCDPRunner:  # type: ignore[override]
+    def _runner(self) -> _AsyncCDPRunner:
         return self._ensure_runner()
-
-    @property
-    def _target_id(self) -> str:  # type: ignore[override]
-        runner = self._ensure_runner()
-        with runner._tabs_lock:
-            if runner._active_target_id:
-                return runner._active_target_id
-            if runner._tabs:
-                return next(iter(runner._tabs.keys()))
-        raise BrowserUnavailableError("No active browser tabs available.")
 
     @property
     def tabs(self) -> List[Tab]:
         """List all open tabs."""
-        runner = self._ensure_runner()
-        with runner._tabs_lock:
-            return [Tab(runner, tid) for tid in runner._tabs.keys()]
+        return self._ensure_runner().tab_manager.list_tabs()
 
     @property
     def active_tab(self) -> Tab:
         """Get currently active Tab instance."""
-        return Tab(self._ensure_runner(), self._target_id)
+        return self._ensure_runner().tab_manager.get_active_tab()
+
+    @property
+    def target_id(self) -> str:
+        return self.active_tab.target_id
+
+    @property
+    def id(self) -> int:
+        return self.active_tab.id
+
+    @property
+    def url(self) -> str:
+        return self.active_tab.url
+
+    @property
+    def title(self) -> str:
+        return self.active_tab.title
 
     def get_tab(self, tab_id: Union[int, str]) -> Tab:
         """Get tab by sequential numeric ID or target ID."""
-        runner = self._ensure_runner()
-        with runner._tabs_lock:
-            numeric_id: Optional[int] = None
-            try:
-                numeric_id = int(tab_id)
-            except (ValueError, TypeError):
-                numeric_id = None
-
-            for tid, info in runner._tabs.items():
-                if numeric_id is not None and info["id"] == numeric_id:
-                    return Tab(runner, tid)
-                if tid == str(tab_id):
-                    return Tab(runner, tid)
-        raise BrowserUnavailableError(f"Tab matching '{tab_id}' not found.")
+        return self._ensure_runner().tab_manager.get_tab(tab_id)
 
     def tab(self, tab_id: Union[int, str]) -> Tab:
         """Alias for get_tab."""
@@ -577,41 +620,11 @@ class Browser(Tab):
 
     def new_tab(self, url: Optional[str] = None) -> Tab:
         """Open a new browser tab and optionally navigate to URL."""
-        runner = self._ensure_runner()
-
-        async def _new() -> str:
-            res = await runner.cdp.call(
-                "Target.createTarget", {"url": "about:blank"}
-            )
-            target_id = str(res["targetId"])
-            sess_id = await runner.cdp.attach_to_target(target_id)
-            await runner.cdp.call("Page.enable", session_id=sess_id)
-            await runner.cdp.call("Runtime.enable", session_id=sess_id)
-            with runner._tabs_lock:
-                if target_id not in runner._tabs:
-                    runner._tab_seq += 1
-                    runner._tabs[target_id] = {
-                        "id": runner._tab_seq,
-                        "target_id": target_id,
-                        "session_id": sess_id,
-                        "url": "about:blank",
-                        "title": "",
-                    }
-                else:
-                    runner._tabs[target_id]["session_id"] = sess_id
-                runner._active_target_id = target_id
-            return target_id
-
-        tid = str(runner.run_coro(_new()))
-        t = Tab(runner, tid)
-        if url:
-            t.navigate(url)
-        return t
+        return self._ensure_runner().tab_manager.create_tab(url)
 
     def close_tab(self, tab_id: Union[int, str]) -> None:
         """Close specific tab by ID."""
-        t = self.get_tab(tab_id)
-        t.close()
+        self._ensure_runner().tab_manager.close_tab(tab_id)
 
     def close(self) -> None:
         """Shut down browser and clean up."""
@@ -619,6 +632,67 @@ class Browser(Tab):
             if self._runner_instance is not None:
                 self._runner_instance.close()
                 self._runner_instance = None
+
+    # Forwarded active-tab operations
+    def navigate(self, url: str, timeout: float = 30.0) -> str:
+        return self.active_tab.navigate(url, timeout=timeout)
+
+    def snapshot(self) -> str:
+        return self.active_tab.snapshot()
+
+    def click(
+        self,
+        target: Union[int, str],
+        button: str = "left",
+        count: int = 1,
+    ) -> Dict[str, Any]:
+        return self.active_tab.click(target, button=button, count=count)
+
+    def type(
+        self,
+        target: Union[int, str],
+        text: str,
+        clear: bool = True,
+        press_enter: bool = False,
+    ) -> Dict[str, Any]:
+        return self.active_tab.type(target, text, clear=clear, press_enter=press_enter)
+
+    def select(self, target: Union[int, str], value: str) -> Dict[str, Any]:
+        return self.active_tab.select(target, value)
+
+    def hover(self, target: Union[int, str]) -> Dict[str, Any]:
+        return self.active_tab.hover(target)
+
+    def scroll(
+        self,
+        x: int = 0,
+        y: int = 500,
+        target: Optional[Union[int, str]] = None,
+    ) -> Dict[str, Any]:
+        return self.active_tab.scroll(x=x, y=y, target=target)
+
+    def eval_js(self, expression: str) -> Any:
+        return self.active_tab.eval_js(expression)
+
+    def screenshot(self, format: str = "png") -> bytes:
+        return self.active_tab.screenshot(format=format)
+
+    def get_text(self, target: Union[int, str]) -> str:
+        return self.active_tab.get_text(target)
+
+    def get_attribute(self, target: Union[int, str], name: str) -> Optional[str]:
+        return self.active_tab.get_attribute(target, name)
+
+    def wait_for(
+        self,
+        target: Union[int, str],
+        state: str = "visible",
+        timeout: float = 10.0,
+    ) -> bool:
+        return self.active_tab.wait_for(target, state=state, timeout=timeout)
+
+    def wait_for_url(self, pattern: str, timeout: float = 15.0) -> str:
+        return self.active_tab.wait_for_url(pattern, timeout=timeout)
 
 
 # Default global browser singleton

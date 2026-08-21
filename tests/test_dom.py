@@ -4,6 +4,12 @@ import pytest
 from arthur.cdp import CDPClient
 from arthur.dom import (
     DOMSnapshotResult,
+    dom_clear_active_element,
+    dom_get_attribute,
+    dom_get_text,
+    dom_scroll_viewport,
+    dom_select_option,
+    dom_submit_active_form,
     generate_snapshot,
     get_dom_metrics,
     resolve_target_coordinates,
@@ -180,3 +186,74 @@ async def test_snapshot_roles_and_attributes(chromium_browser):
     await client.detach_from_target(session_id)
     await client.close()
 
+
+
+@pytest.mark.asyncio
+async def test_deepened_dom_operations(chromium_browser):
+    client = CDPClient()
+    await client.connect(chromium_browser.ws_url)
+
+    html = """
+    <!DOCTYPE html>
+    <html>
+    <head><title>Deep DOM Test</title></head>
+    <body style="height: 2000px;">
+        <h1 data-category="main-header" id="heading">Arthur Deep DOM</h1>
+        <select id="color-picker">
+            <option value="red">Red Color</option>
+            <option value="blue">Blue Color</option>
+        </select>
+        <form onsubmit="event.preventDefault(); document.getElementById('form-status').innerText = 'Submitted!';">
+            <input id="active-inp" type="text" value="Initial Text" />
+            <input type="submit" id="sub-btn" value="Submit" />
+        </form>
+        <div id="form-status">Pending</div>
+    </body>
+    </html>
+    """
+    import urllib.parse
+    data_url = "data:text/html;charset=utf-8," + urllib.parse.quote(html)
+
+    targets = await client.call("Target.getTargets")
+    page_target = [t for t in targets["targetInfos"] if t["type"] == "page"][0]
+    session_id = await client.attach_to_target(page_target["targetId"])
+
+    await client.call("Page.enable", session_id=session_id)
+    await client.call("Page.navigate", {"url": data_url}, session_id=session_id)
+    await client.wait_for_event("Page.loadEventFired", session_id=session_id)
+
+    # 1. Snapshot outline
+    snap = await generate_snapshot(client, session_id=session_id)
+    assert "combobox [#1]" in snap.snapshot
+    assert "textbox [#2]" in snap.snapshot
+
+    # 2. Get text and attribute
+    text_val = await dom_get_text(client, "#heading", session_id=session_id)
+    assert text_val == "Arthur Deep DOM"
+
+    attr_val = await dom_get_attribute(client, "#heading", "data-category", session_id=session_id)
+    assert attr_val == "main-header"
+
+    # 3. Select option via Ref-ID
+    sel_res = await dom_select_option(client, 1, "blue", session_id=session_id)
+    assert sel_res["status"] == "ok"
+    assert sel_res["value"] == "blue"
+
+    # 4. Clear active element and form submit
+    await resolve_target_coordinates(client, 2, session_id=session_id)
+    # Focus input
+    await client.call("Runtime.evaluate", {"expression": "document.getElementById('active-inp').focus()"}, session_id=session_id)
+    await dom_clear_active_element(client, session_id=session_id)
+    inp_val = await client.call("Runtime.evaluate", {"expression": "document.getElementById('active-inp').value"}, session_id=session_id)
+    assert inp_val["result"]["value"] == ""
+
+    await dom_submit_active_form(client, session_id=session_id)
+    status_val = await client.call("Runtime.evaluate", {"expression": "document.getElementById('form-status').innerText"}, session_id=session_id)
+    assert status_val["result"]["value"] == "Submitted!"
+
+    # 5. Scroll viewport
+    scroll_res = await dom_scroll_viewport(client, x=0, y=350, session_id=session_id)
+    assert scroll_res["status"] == "ok"
+
+    await client.detach_from_target(session_id)
+    await client.close()

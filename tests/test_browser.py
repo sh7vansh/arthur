@@ -125,3 +125,31 @@ def test_browser_wait_for_and_timeout(browser: Browser):
     # Timeout waiting for nonexistent element
     with pytest.raises(NavigationTimeoutError):
         browser.wait_for("#never-exists", timeout=0.2)
+
+
+def test_browser_tab_manager_decoupled(browser: Browser):
+    # Browser should compose, NOT inherit from Tab
+    assert not isinstance(browser, Tab)
+
+    html = """
+    <!DOCTYPE html>
+    <html>
+    <head><title>Decoupled Test</title></head>
+    <body>
+        <h2 id="subtitle" data-version="1.0">Subtitle Heading</h2>
+        <a href="https://example.com" id="link1">Visit Link</a>
+    </body>
+    </html>
+    """
+    data_url = "data:text/html;charset=utf-8," + urllib.parse.quote(html)
+    browser.navigate(data_url)
+    browser.snapshot()
+
+    # Test get_attribute and get_text via Browser facade and Tab directly
+    assert browser.get_text("#subtitle") == "Subtitle Heading"
+    assert browser.get_attribute("#subtitle", "data-version") == "1.0"
+
+    active = browser.active_tab
+    assert isinstance(active, Tab)
+    assert active.get_text("#subtitle") == "Subtitle Heading"
+    assert active.get_attribute("#subtitle", "data-version") == "1.0"

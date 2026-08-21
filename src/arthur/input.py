@@ -1,10 +1,15 @@
 """Synthetic input simulation over Chrome DevTools Protocol."""
 
-import json
 from typing import Any, Dict, Optional, Union
 
 from arthur.cdp import CDPClient
-from arthur.dom import resolve_target_coordinates
+from arthur.dom import (
+    dom_clear_active_element,
+    dom_scroll_viewport,
+    dom_select_option,
+    dom_submit_active_form,
+    resolve_target_coordinates,
+)
 from arthur.errors import CDPError, ElementNotFoundError
 
 
@@ -99,24 +104,8 @@ async def cdp_type(
     await cdp_click(cdp, target, session_id=session_id)
 
     if clear:
-        # Clear existing text
-        await cdp.call(
-            "Runtime.evaluate",
-            {
-                "expression": """
-                (() => {
-                    const el = document.activeElement;
-                    if (el) {
-                        if ('value' in el) el.value = '';
-                        else if (el.isContentEditable) el.innerText = '';
-                        el.dispatchEvent(new Event('input', { bubbles: true }));
-                        el.dispatchEvent(new Event('change', { bubbles: true }));
-                    }
-                })()
-                """
-            },
-            session_id=session_id,
-        )
+        # Clear existing text using DOM engine
+        await dom_clear_active_element(cdp, session_id=session_id)
 
     # Insert text via Input.insertText for full Unicode and speed
     if text:
@@ -149,25 +138,8 @@ async def cdp_type(
             },
             session_id=session_id,
         )
-        # Form submit fallback if needed
-        await cdp.call(
-            "Runtime.evaluate",
-            {
-                "expression": """
-                (() => {
-                    const el = document.activeElement;
-                    if (el && el.form) {
-                        if (typeof el.form.requestSubmit === 'function') {
-                            el.form.requestSubmit();
-                        } else {
-                            el.form.submit();
-                        }
-                    }
-                })()
-                """
-            },
-            session_id=session_id,
-        )
+        # Form submit fallback via DOM engine
+        await dom_submit_active_form(cdp, session_id=session_id)
 
     return {
         "status": "ok",
@@ -184,49 +156,7 @@ async def cdp_select(
     session_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Select option in a <select> element by value or visible text."""
-    expr = f"""
-    ((target, value) => {{
-        let el = null;
-        if (typeof target === 'number') {{
-            el = window.__AG_REGISTRY__?.refMap?.get(target);
-        }} else if (typeof target === 'string') {{
-            const m = target.match(/^\\[#\\s*(\\d+)\\]$/) || target.match(/^#(\\d+)$/);
-            if (m) el = window.__AG_REGISTRY__?.refMap?.get(parseInt(m[1], 10));
-            else el = document.querySelector(target);
-        }}
-        if (!el || el.tagName !== 'SELECT') {{
-            return {{ __error: {{ code: 'ELEMENT_NOT_FOUND', target: String(target), message: 'Element is not a <select> dropdown' }} }};
-        }}
-        let found = false;
-        for (const opt of el.options) {{
-            if (opt.value === value || opt.text === value) {{
-                opt.selected = true;
-                found = true;
-                break;
-            }}
-        }}
-        if (found) {{
-            el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-            el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-            return {{ status: 'ok', action: 'select', value, target: String(target) }};
-        }}
-        return {{ __error: {{ code: 'ELEMENT_NOT_FOUND', target: String(target), message: 'Option \"' + value + '\" not found' }} }};
-    }})({json.dumps(target)}, {json.dumps(value)})
-    """
-
-    res = await cdp.call(
-        "Runtime.evaluate",
-        {"expression": expr, "returnByValue": True, "awaitPromise": True},
-        session_id=session_id,
-    )
-    val = res.get("result", {}).get("value", {})
-    if "__error" in val:
-        err = val["__error"]
-        if err.get("code") == "ELEMENT_NOT_FOUND":
-            raise ElementNotFoundError(target=str(target))
-        raise CDPError(err.get("message", "Failed to select option"))
-
-    return val  # type: ignore[no-any-return]
+    return await dom_select_option(cdp, target, value, session_id=session_id)
 
 
 async def cdp_scroll(
@@ -247,13 +177,7 @@ async def cdp_scroll(
             session_id=session_id,
         )
     else:
-        await cdp.call(
-            "Runtime.evaluate",
-            {
-                "expression": f"window.scrollBy({{ left: {x}, top: {y}, behavior: 'instant' }})"
-            },
-            session_id=session_id,
-        )
+        await dom_scroll_viewport(cdp, x=x, y=y, session_id=session_id)
 
     return {"status": "ok", "action": "scroll", "x": x, "y": y}
 

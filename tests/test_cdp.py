@@ -1,3 +1,4 @@
+from typing import Optional
 """Tests for arthur.cdp — Minimal CDP WebSocket Client & Session Dispatcher."""
 
 import asyncio
@@ -54,7 +55,7 @@ class MockCDPServer:
         self.port = sockets[0].getsockname()[1]
         self.ws_url = f"ws://127.0.0.1:{self.port}"
 
-    async def broadcast_event(self, method: str, params: dict, session_id: str = None):
+    async def broadcast_event(self, method: str, params: dict, session_id: Optional[str] = None):
         msg = {"method": method, "params": params}
         if session_id:
             msg["sessionId"] = session_id
