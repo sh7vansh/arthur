@@ -64,9 +64,41 @@ Add Arthur to your MCP settings file (e.g. `claude_desktop_config.json`):
 
 ---
 
-### 2. Remote Server / Cloud (Stateless Streamable HTTP)
+### 2. Docker Container (Self-Contained Streamable HTTP)
 
-To run Arthur on a remote VM, container, or cloud server:
+Run Arthur in a lightweight, self-contained Debian Slim container with headless Chromium, `tini` PID 1 process management, and native multi-arch support (`amd64` / `arm64`):
+
+#### Run via Docker:
+```bash
+docker run -d \
+  --name arthur \
+  -p 8000:8000 \
+  --shm-size=1g \
+  --restart unless-stopped \
+  sh7vansh/arthur:latest
+```
+
+#### Or Run via Docker Compose:
+```bash
+docker compose up -d
+```
+
+#### Connect Your MCP Client:
+```json
+{
+  "mcpServers": {
+    "arthur": {
+      "url": "http://localhost:8000/mcp"
+    }
+  }
+}
+```
+
+---
+
+### 3. Remote Server / Cloud (Direct Python via `uvx`)
+
+To run Arthur on a remote VM, VPS, or cloud server without Docker:
 
 #### Start the Server:
 ```bash
@@ -88,7 +120,7 @@ uvx arthur-runtime mcp --transport streamable-http --stateless --host 0.0.0.0 --
 
 ---
 
-### 3. Interactive Terminal Shell (For Testing)
+### 4. Interactive Terminal Shell (For Testing)
 
 Test the browser directly from your terminal:
 

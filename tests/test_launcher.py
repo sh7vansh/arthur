@@ -49,3 +49,25 @@ def test_launch_and_cleanup_chromium_instance():
 
     assert not instance.is_alive
     assert not os.path.exists(user_data_dir)
+
+
+def test_launch_chromium_respects_no_sandbox_and_extra_args(monkeypatch):
+    monkeypatch.setenv("ARTHUR_NO_SANDBOX", "1")
+    monkeypatch.setenv("ARTHUR_CHROME_ARGS", "--custom-flag --another-flag=value")
+
+    captured_cmds = []
+
+    def mock_popen(cmd, *args, **kwargs):
+        captured_cmds.append(cmd)
+        raise RuntimeError("Stop early for arg inspection")
+
+    monkeypatch.setattr(subprocess, "Popen", mock_popen)
+
+    with pytest.raises(BrowserUnavailableError):
+        launch_chromium()
+
+    assert len(captured_cmds) == 1
+    cmd = captured_cmds[0]
+    assert "--no-sandbox" in cmd
+    assert "--custom-flag" in cmd
+    assert "--another-flag=value" in cmd

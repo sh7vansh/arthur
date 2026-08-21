@@ -1,0 +1,20 @@
+services:
+  arthur:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sh7vansh/arthur:latest
+    container_name: arthur-mcp
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    shm_size: "1gb"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - ARTHUR_NO_SANDBOX=1
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import socket; s = socket.create_connection(('127.0.0.1', 8000), timeout=2); s.close()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s

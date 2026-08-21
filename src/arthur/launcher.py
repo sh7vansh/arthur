@@ -3,6 +3,7 @@
 import atexit
 import logging
 import os
+import shlex
 import shutil
 import signal
 import subprocess
@@ -245,11 +246,29 @@ def launch_chromium(
     ]
 
     # Container / root sandbox fallback
+    no_sandbox = False
     try:
         if hasattr(os, "geteuid") and os.geteuid() == 0:
-            cmd.append("--no-sandbox")
+            no_sandbox = True
     except Exception:
         pass
+
+    if (
+        os.environ.get("ARTHUR_NO_SANDBOX", "").lower() in ("1", "true", "yes")
+        or os.environ.get("CHROME_NO_SANDBOX", "").lower() in ("1", "true", "yes")
+        or os.environ.get("ARTHUR_CONTAINER", "").lower() in ("1", "true", "yes")
+        or os.path.exists("/.dockerenv")
+        or os.path.exists("/run/.containerenv")
+    ):
+        no_sandbox = True
+
+    if no_sandbox and "--no-sandbox" not in cmd:
+        cmd.append("--no-sandbox")
+
+    # Environment extra args
+    env_extra_args = os.environ.get("ARTHUR_CHROME_ARGS") or os.environ.get("CHROME_EXTRA_ARGS")
+    if env_extra_args:
+        cmd.extend(shlex.split(env_extra_args))
 
     if extra_args:
         cmd.extend(extra_args)
