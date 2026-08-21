@@ -74,3 +74,15 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Update Docker Hub Description
+        if: github.event_name != 'pull_request' && env.DOCKERHUB_TOKEN != ''
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: sh7vansh/arthur
+          readme-filepath: ./DOCKER.md
+          short-description: "Lightweight Headless Chromium Runtime & Streamable HTTP FastMCP Server for AI Agents"
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
