@@ -916,6 +916,371 @@ class Tab:
 
         self._runner.run_coro(_close_tab())
 
+
+
+    def extract_items(
+        self,
+        container_selector: str,
+        fields: dict,
+    ) -> list:
+        """Extract structured data rows and attributes across repeated container elements in a single JS pass."""
+        import json
+        js_payload = f"""
+        (() => {{
+            const containerSelector = {json.dumps(container_selector)};
+            const fields = {json.dumps(fields)};
+            const containers = Array.from(document.querySelectorAll(containerSelector));
+            const results = [];
+
+            for (const container of containers) {{
+                const row = {{}};
+                for (const [key, fieldSel] of Object.entries(fields)) {{
+                    let targetEl = container;
+                    let attrName = null;
+                    let sel = (fieldSel || '').trim();
+
+                    if (sel.includes('@')) {{
+                        const parts = sel.split('@');
+                        const subSel = parts[0].trim();
+                        attrName = parts[1].trim();
+                        if (subSel && subSel !== '.' && subSel !== 'self' && subSel.toLowerCase() !== 'text') {{
+                            targetEl = container.querySelector(subSel);
+                        }}
+                    }} else if (sel && sel !== '.' && sel !== 'self' && sel.toLowerCase() !== 'text') {{
+                        targetEl = container.querySelector(sel);
+                    }}
+
+                    if (!targetEl) {{
+                        row[key] = "";
+                    }} else if (attrName) {{
+                        if (attrName.toLowerCase() === 'text') {{
+                            row[key] = (targetEl.innerText || targetEl.textContent || "").trim();
+                        }} else {{
+                            const val = targetEl.getAttribute(attrName);
+                            row[key] = (val !== null && val !== undefined ? val : "").toString().trim();
+                        }}
+                    }} else {{
+                        row[key] = (targetEl.innerText || targetEl.textContent || "").trim();
+                    }}
+                }}
+                results.push(row);
+            }}
+            return results;
+        }})()
+        """
+        res = self.eval_js(js_payload)
+        return res if res else []
+
+    def fill_form(
+        self,
+        mapping: dict,
+        submit: str | bool | None = None,
+    ) -> dict:
+        """Fill an entire form and optionally submit in a single roundtrip."""
+        import json
+        _DISCOVERY_HELPER_JS = """
+function __cb_is_visible(el, style) {
+    if (!el || el.nodeType !== 1) return false;
+    if (el.hasAttribute('hidden') || el.getAttribute('aria-hidden') === 'true' || el.hasAttribute('inert')) return false;
+    if (typeof el.checkVisibility === 'function') {
+        if (!el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) {
+            if (el.tagName === 'INPUT' && (el.type === 'checkbox' || el.type === 'radio')) return true;
+            return false;
+        }
+    }
+    if (!style) style = window.getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse' || parseFloat(style.opacity) < 0.05) return false;
+    const rect = el.getBoundingClientRect();
+    if (rect.width === 0 && rect.height === 0) {
+        if (el.tagName === 'INPUT' && (el.type === 'checkbox' || el.type === 'radio')) return true;
+        return false;
+    }
+    return true;
+}
+
+function __cb_get_accessible_name(el) {
+    if (!el) return '';
+    const labelledby = el.getAttribute('aria-labelledby');
+    if (labelledby) {
+        const parts = labelledby.split(/\\s+/).map(id => document.getElementById(id)?.innerText?.trim()).filter(Boolean);
+        if (parts.length > 0) return parts.join(' ');
+    }
+    const ariaLabel = el.getAttribute('aria-label');
+    if (ariaLabel && ariaLabel.trim()) return ariaLabel.trim();
+
+    if (el.id && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT')) {
+        try {
+            const labelEl = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+            if (labelEl && labelEl.innerText.trim()) return labelEl.innerText.trim();
+        } catch(e) {}
+    }
+    const parentLabel = el.closest('label');
+    if (parentLabel && parentLabel.innerText.trim()) return parentLabel.innerText.trim();
+
+    if (el.getAttribute('placeholder')) return el.getAttribute('placeholder').trim();
+    if (el.getAttribute('title')) return el.getAttribute('title').trim();
+    if (el.getAttribute('alt')) return el.getAttribute('alt').trim();
+
+    if (['BUTTON', 'A', 'SUMMARY', 'OPTION'].includes(el.tagName)) {
+        const fullText = (el.innerText || el.textContent || '').trim();
+        if (fullText) return fullText.slice(0, 120);
+    }
+    return (el.innerText || el.textContent || el.value || '').trim().slice(0, 120);
+}
+
+function __cb_get_computed_role(el) {
+    if (!el) return 'generic';
+    const explicitRole = el.getAttribute('role');
+    if (explicitRole) return explicitRole.toLowerCase().trim();
+
+    const tag = el.tagName.toLowerCase();
+    switch (tag) {
+        case 'a': return el.hasAttribute('href') ? 'link' : 'generic';
+        case 'button': return 'button';
+        case 'input': {
+            const type = (el.getAttribute('type') || 'text').toLowerCase();
+            if (['button', 'submit', 'reset', 'image'].includes(type)) return 'button';
+            if (type === 'checkbox') return 'checkbox';
+            if (type === 'radio') return 'radio';
+            if (type === 'search') return 'searchbox';
+            return 'textbox';
+        }
+        case 'select': return 'combobox';
+        case 'textarea': return 'textbox';
+        case 'summary': return 'button';
+        case 'details': return 'group';
+        case 'h1': return 'heading[level=1]';
+        case 'h2': return 'heading[level=2]';
+        case 'h3': return 'heading[level=3]';
+        case 'h4': return 'heading[level=4]';
+        case 'h5': return 'heading[level=5]';
+        case 'h6': return 'heading[level=6]';
+        case 'nav': return 'navigation';
+        case 'main': return 'main';
+        case 'header': return 'banner';
+        case 'footer': return 'contentinfo';
+        case 'form': return 'form';
+        case 'table': return 'table';
+        default: return 'generic';
+    }
+}
+
+function __cb_tag(el) {
+    if (!el) return null;
+    if (!window.__cb_handle_counter) window.__cb_handle_counter = 0;
+    let bridgeId = el.getAttribute('data-cbridge-id');
+    if (!bridgeId) {
+        bridgeId = 'cb_' + (++window.__cb_handle_counter) + '_' + Date.now().toString(36);
+        el.setAttribute('data-cbridge-id', bridgeId);
+    }
+    const text = __cb_get_accessible_name(el);
+    const role = __cb_get_computed_role(el);
+    return {
+        selector: '[data-cbridge-id="' + bridgeId + '"]',
+        tagName: el.tagName.toLowerCase(),
+        role: role,
+        text: text.slice(0, 100),
+        id: el.id || '',
+        name: el.getAttribute('name') || '',
+        placeholder: el.getAttribute('placeholder') || '',
+        value: el.value || ''
+    };
+}
+
+function __cb_wait_for(finderFn, timeoutMs) {
+    timeoutMs = (typeof timeoutMs === 'number') ? timeoutMs : 1500;
+    try {
+        const immediate = finderFn();
+        if (immediate) return Promise.resolve(immediate);
+    } catch(e) {}
+    if (timeoutMs <= 0) return Promise.resolve(null);
+
+    return new Promise((resolve) => {
+        let timer = null;
+        let observer = null;
+        let rafId = null;
+
+        const cleanup = () => {
+            if (timer) clearTimeout(timer);
+            if (observer) observer.disconnect();
+            if (rafId && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(rafId);
+        };
+
+        const check = () => {
+            try {
+                const found = finderFn();
+                if (found) {
+                    cleanup();
+                    resolve(found);
+                    return true;
+                }
+            } catch(e) {}
+            return false;
+        };
+
+        try {
+            if (typeof MutationObserver !== 'undefined') {
+                observer = new MutationObserver(() => {
+                    check();
+                });
+                const root = document.documentElement || document.body;
+                if (root) {
+                    observer.observe(root, {
+                        childList: true,
+                        subtree: true,
+                        attributes: true,
+                        characterData: true
+                    });
+                }
+            }
+        } catch(e) {}
+
+        if (typeof requestAnimationFrame === 'function') {
+            const loop = () => {
+                if (!check()) {
+                    rafId = requestAnimationFrame(loop);
+                }
+            };
+            rafId = requestAnimationFrame(loop);
+        }
+
+        timer = setTimeout(() => {
+            cleanup();
+            try {
+                resolve(finderFn());
+            } catch(e) {
+                resolve(null);
+            }
+        }, timeoutMs);
+    });
+}
+"""
+        js_payload = f"""
+        (() => {{
+            {_DISCOVERY_HELPER_JS}
+            const mapping = {json.dumps(mapping)};
+            const submit = {json.dumps(submit)};
+            let filledCount = 0;
+            const errors = [];
+
+            function findField(key) {{
+                if (key.startsWith('[#') || key.startsWith('#') || key.startsWith('.') || key.startsWith('input') || key.startsWith('[data-')) {{
+                    try {{
+                        const el = document.querySelector(key);
+                        if (el && __cb_is_visible(el)) return el;
+                    }} catch(e) {{}}
+                }}
+                const qLower = key.toLowerCase();
+                const inputs = document.querySelectorAll('input:not([type="hidden"]), textarea, select, [contenteditable="true"], [role="textbox"], [role="searchbox"], [role="combobox"]');
+                let best = null;
+                let bestScore = 0;
+                for (const el of inputs) {{
+                    if (!__cb_is_visible(el)) continue;
+                    let score = 0;
+                    const ph = (el.getAttribute('placeholder') || '').toLowerCase();
+                    const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+                    const nm = (el.getAttribute('name') || '').toLowerCase();
+                    const id = (el.id || '').toLowerCase();
+                    if (ph === qLower || aria === qLower || nm === qLower || id === qLower) score = 100;
+                    else if (ph.includes(qLower) || aria.includes(qLower) || nm.includes(qLower)) score = 70;
+                    
+                    if (el.id) {{
+                        try {{
+                            const l = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+                            if (l && (l.innerText.toLowerCase() === qLower || l.innerText.toLowerCase().includes(qLower))) score = Math.max(score, 95);
+                        }} catch(e) {{}}
+                    }}
+                    const pLabel = el.closest('label');
+                    if (pLabel && (pLabel.innerText.toLowerCase() === qLower || pLabel.innerText.toLowerCase().includes(qLower))) score = Math.max(score, 90);
+
+                    if (score > bestScore) {{
+                        bestScore = score;
+                        best = el;
+                    }}
+                }}
+                return best;
+            }}
+
+            for (const [key, value] of Object.entries(mapping)) {{
+                const el = findField(key);
+                if (!el) {{
+                    errors.push({{ field: key, error: "Field not found" }});
+                    continue;
+                }}
+                const tag = el.tagName.toLowerCase();
+                const type = (el.type || '').toLowerCase();
+                const role = (el.getAttribute('role') || '').toLowerCase();
+
+                if (typeof value === 'boolean') {{
+                    const isChecked = !!el.checked || el.getAttribute('aria-checked') === 'true';
+                    if (isChecked !== value) {{
+                        el.click();
+                    }}
+                }} else if (type === 'radio' || role === 'radio') {{
+                    el.click();
+                }} else if (tag === 'select' || role === 'combobox' || Array.isArray(value)) {{
+                    const targetVal = String(Array.isArray(value) ? value[0] : value);
+                    let foundOption = false;
+                    if (el.options) {{
+                        for (let i = 0; i < el.options.length; i++) {{
+                            if (el.options[i].value === targetVal || el.options[i].text.trim() === targetVal) {{
+                                el.selectedIndex = i;
+                                foundOption = true;
+                                break;
+                            }}
+                        }}
+                    }}
+                    if (!foundOption) el.value = targetVal;
+                    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                }} else {{
+                    el.focus();
+                    el.value = String(value);
+                    el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                }}
+                filledCount++;
+            }}
+
+            let submitted = false;
+            if (submit) {{
+                if (submit === true || String(submit).toLowerCase() === 'enter') {{
+                    const form = document.querySelector('form');
+                    if (form) {{
+                        if (typeof form.requestSubmit === 'function') form.requestSubmit();
+                        else form.submit();
+                        submitted = true;
+                    }}
+                }} else {{
+                    const submitStr = String(submit).toLowerCase();
+                    const buttons = document.querySelectorAll('button, input[type="submit"], input[type="button"], [role="button"], a.btn');
+                    for (const b of buttons) {{
+                        if (!__cb_is_visible(b)) continue;
+                        const txt = (b.innerText || b.value || b.getAttribute('aria-label') || '').trim().toLowerCase();
+                        if (txt === submitStr || txt.includes(submitStr)) {{
+                            b.click();
+                            submitted = true;
+                            break;
+                        }}
+                    }}
+                }}
+            }}
+
+            return {{
+                success: errors.length === 0,
+                filled: filledCount,
+                submitted: submitted,
+                errors: errors
+            }};
+        }})()
+        """
+        res = self.eval_js(js_payload)
+        if isinstance(res, dict) and res.get("errors"):
+            first_err = res["errors"][0]
+            field_name = first_err.get("field", "form_field")
+            from arthur.errors import ElementNotFoundError
+            raise ElementNotFoundError(target=field_name, tab_id=self.id, url=self.url)
+        return res if isinstance(res, dict) else {"success": True, "filled": len(mapping), "submitted": bool(submit)}
+
     def help(self) -> str:
         """Return a formatted quick reference of available SDK methods and examples."""
         return (
@@ -1151,6 +1516,15 @@ class Browser:
         """Return formatted quick reference of available SDK methods."""
         return self.active_tab.help()
 
+
+
+    def extract_items(self, container_selector: str, fields: dict) -> list:
+        """Extract structured data rows and attributes across repeated container elements."""
+        return self.active_tab.extract_items(container_selector, fields)
+
+    def fill_form(self, mapping: dict, submit: str | bool | None = None) -> dict:
+        """Fill an entire form and optionally submit in a single roundtrip."""
+        return self.active_tab.fill_form(mapping, submit)
 
 # Default global browser singleton
 browser = Browser()

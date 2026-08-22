@@ -41,7 +41,9 @@ All interaction methods accept polymorphic target references: integer Ref-IDs (`
 - `browser.new_tab("https://example.com")` -> Opens a new tab
 - `browser.close_tab(tab_id)` -> Safely closes the specified tab
 
-## 4. Extraction & JavaScript Execution
+## 4. Extraction, Forms & JavaScript Execution
+- `items = browser.extract_items("article.post", {"title": "h2", "link": "a@href"})` -> Structured batch extraction
+- `browser.fill_form({"Email": "test@test.com"}, submit="Sign In")` -> Fill entire forms and submit
 - `text = browser.get_text(3)` -> Extracted inner text content
 - `attr = browser.get_attribute(3, "href")` -> Value of element attribute
 - `result = browser.eval_js("document.title")` -> Evaluates JS in page context
@@ -108,7 +110,9 @@ CORE API CHEATSHEET:
    browser.active_tab                 # Active Tab handle
    tab = browser.get_tab(id)          # Scoped tab handle
    browser.close_tab(id)              # Close tab
-4. Extraction & JavaScript:
+4. Extraction, Forms & Scripting:
+   items = browser.extract_items("article.post", {"title": "h2", "link": "a@href"})
+   browser.fill_form({"Email": "test@test.com"}, submit="Sign In")
    text = browser.get_text(3)         # Extract text
    attr = browser.get_attribute(3, "href") # Get attribute
    res = browser.eval_js("document.title") # Execute JS in page context

@@ -170,8 +170,10 @@ browser.scroll(x=0, y=500)
 browser.wait_for(1, state="visible", timeout=10.0)
 browser.wait_for_url(r"^https://example\.com/dashboard", timeout=15.0)
 
-# Page Evaluation & Inspection
+# Page Evaluation, Forms & Extraction
 result = browser.eval_js("window.innerWidth")
+items = browser.extract_items("article.post", {"title": "h2", "link": "a@href"})
+browser.fill_form({"Email": "test@test.com"}, submit="Sign In")
 png_bytes = browser.screenshot()
 text = browser.get_text(1)
 attr = browser.get_attribute(1, "data-custom")
