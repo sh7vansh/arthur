@@ -10,6 +10,7 @@ from arthur.errors import (
     BrowserUnavailableError,
     CDPError,
     ElementNotFoundError,
+    NavigationTimeoutError,
 )
 
 IN_PAGE_DOM_SCRIPT = r"""
@@ -461,7 +462,125 @@ IN_PAGE_DOM_SCRIPT = r"""
   }
 
   window.__arthur_dom_op = function(payload) {
-    const op = payload ? payload.operation : "snapshot";
+    
+  function waitForCondition(target, state = 'visible', timeout = 10.0) {
+    return new Promise((resolve) => {
+      const timeoutMs = (timeout || 10.0) * 1000;
+      const startTime = performance.now();
+
+      function checkCondition() {
+        const res = resolveTarget(target);
+        if (state === 'attached') {
+          return !res.error && res.el && res.el.isConnected;
+        }
+        if (state === 'hidden') {
+          return res.error || !res.el || !isVisible(res.el);
+        }
+        return !res.error && res.el && isVisible(res.el);
+      }
+
+      if (checkCondition()) {
+        return resolve({ matched: true, elapsed: performance.now() - startTime });
+      }
+
+      let resolved = false;
+      let observer = null;
+      let timer = null;
+      let interval = null;
+
+      function cleanup() {
+        if (observer) {
+          try { observer.disconnect(); } catch {}
+          observer = null;
+        }
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
+        if (interval) {
+          clearInterval(interval);
+          interval = null;
+        }
+        window.removeEventListener('transitionend', onActivity);
+        window.removeEventListener('animationend', onActivity);
+        window.removeEventListener('popstate', onActivity);
+        window.removeEventListener('hashchange', onActivity);
+      }
+
+      function onActivity() {
+        if (resolved) return;
+        if (checkCondition()) {
+          resolved = true;
+          cleanup();
+          resolve({ matched: true, elapsed: performance.now() - startTime });
+        }
+      }
+
+      timer = setTimeout(() => {
+        if (resolved) return;
+        resolved = true;
+        cleanup();
+
+        let autoSnapshot = '';
+        try {
+          const snapRes = generateSnapshot();
+          autoSnapshot = snapRes.snapshot || '';
+        } catch {}
+
+        let targetLabel = String(target);
+        if (typeof target === 'object' && target !== null) {
+          if (target.refId !== undefined) targetLabel = `[#${target.refId}]`;
+          else if (target.selector) targetLabel = target.selector;
+        }
+
+        resolve({
+          __error: {
+            code: 'TIMEOUT',
+            target: targetLabel,
+            timeout,
+            readyState: document.readyState,
+            domState: "condition '" + state + "' not met",
+            url: window.location.href,
+            auto_snapshot: autoSnapshot
+          }
+        });
+      }, timeoutMs);
+
+      try {
+        observer = new MutationObserver(() => {
+          onActivity();
+        });
+        const targetNode = document.documentElement || document.body;
+        if (targetNode) {
+          observer.observe(targetNode, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: ['style', 'class', 'hidden', 'aria-hidden', 'inert', 'disabled']
+          });
+        }
+      } catch {}
+
+      window.addEventListener('transitionend', onActivity);
+      window.addEventListener('animationend', onActivity);
+      window.addEventListener('popstate', onActivity);
+      window.addEventListener('hashchange', onActivity);
+
+      interval = setInterval(() => {
+        if (resolved) {
+          clearInterval(interval);
+          return;
+        }
+        if (checkCondition()) {
+          resolved = true;
+          cleanup();
+          resolve({ matched: true, elapsed: performance.now() - startTime });
+        }
+      }, 500);
+    });
+  }
+
+  const op = payload ? payload.operation : "snapshot";
     const args = payload ? payload.args : {};
 
     if (op === "snapshot") return generateSnapshot();
@@ -472,6 +591,7 @@ IN_PAGE_DOM_SCRIPT = r"""
     if (op === "clear_active") return clearActive();
     if (op === "submit_active") return submitActive();
     if (op === "get_metrics") return getMetrics();
+    if (op === "wait_for") return waitForCondition(args.target, args.state, args.timeout);
     if (op === "scroll_viewport") return scrollViewport(args.x, args.y);
 
     return { __error: { message: `Unknown DOM operation: ${op}` } };
@@ -525,6 +645,14 @@ async def evaluate_dom_operation(
                     stale=err_data.get("stale", False),
                     suggestions=err_data.get("suggestions", []),
                     url=err_data.get("url", ""),
+                )
+            if err_data.get("code") == "TIMEOUT":
+                raise NavigationTimeoutError(
+                    target=err_data.get("target", ""),
+                    timeout=err_data.get("timeout", 10.0),
+                    url=err_data.get("url", ""),
+                    ready_state=err_data.get("readyState", "unknown"),
+                    dom_state=err_data.get("domState", "unknown"),
                 )
             raise CDPError(err_data.get("message", "DOM operation error"))
         return val

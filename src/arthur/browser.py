@@ -915,56 +915,31 @@ class Tab:
         state: str = "visible",
         timeout: float = 10.0,
     ) -> bool:
-        """Synchronously wait for an element to reach a target lifecycle state.
-
-        Args:
-            target: Element locator (e.g. `10`, `"[#10]"`, or `"#results"`).
-            state: Expected condition ('visible', 'attached', 'hidden'). Default is 'visible'.
-            timeout: Maximum seconds to wait before timing out. Default is 10.0.
-
-        Returns:
-            True if element reached condition within timeout.
-
-        Example:
-            >>> browser.wait_for(10, state="visible", timeout=5.0)
-        """
+        """Synchronously wait for an element to reach a target lifecycle state."""
         session_id = self._ensure_session_id()
-        start = time.time()
-
-        while time.time() - start < timeout:
-            try:
-                coord = self._runner.run_coro(
-                    resolve_target_coordinates(
-                        self._runner.cdp, target, session_id=session_id
-                    )
-                )
-                if state == "visible" and coord:
-                    return True
-                if state == "attached" and coord:
-                    return True
-            except ElementNotFoundError:
-                if state == "hidden":
-                    return True
-            except Exception:
-                pass
-            time.sleep(0.1)
-
-        intro = {}
-        try:
-            intro = self._runner.run_coro(
-                get_dom_metrics(self._runner.cdp, session_id=session_id)
+        
+        async def _do_wait() -> bool:
+            from arthur.dom import evaluate_dom_operation
+            res = await evaluate_dom_operation(
+                self._runner.cdp,
+                "wait_for",
+                {"target": target, "state": state, "timeout": timeout},
+                session_id=session_id
             )
-        except Exception:
-            pass
-
-        raise NavigationTimeoutError(
-            target=str(target),
-            timeout=timeout,
-            url=self.url,
-            ready_state=intro.get("readyState", "unknown"),
-            dom_state=f"condition '{state}' not met",
-            tab_id=self.id,
-        )
+            if isinstance(res, dict) and "__error" in res:
+                err = res["__error"]
+                if err.get("code") == "TIMEOUT":
+                    raise NavigationTimeoutError(
+                        target=err.get("target", str(target)),
+                        timeout=err.get("timeout", timeout),
+                        url=err.get("url", self.url),
+                        ready_state=err.get("readyState", "unknown"),
+                        dom_state=err.get("domState", f"condition '{state}' not met"),
+                    )
+                raise CDPError(f"Wait failed: {err}")
+            return True
+            
+        return self._runner.run_coro(_do_wait())
 
     def wait_for_url(self, pattern: str, timeout: float = 15.0) -> str:
         r"""Synchronously wait until the page URL matches a regex pattern.
