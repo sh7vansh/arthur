@@ -518,6 +518,15 @@ class Tab:
     @property
     def url(self) -> str:
         """Current URL of the tab."""
+        try:
+            val = self.eval_js("window.location.href")
+            if val:
+                with self._tab_manager._tabs_lock:
+                    if self._target_id in self._tab_manager._tabs:
+                        self._tab_manager._tabs[self._target_id]["url"] = str(val)
+                return str(val)
+        except Exception:
+            pass
         with self._tab_manager._tabs_lock:
             info = self._tab_manager._tabs.get(self._target_id)
             return info.get("url", "") if info else ""
@@ -525,6 +534,15 @@ class Tab:
     @property
     def title(self) -> str:
         """Current document title of the tab."""
+        try:
+            val = self.eval_js("document.title")
+            if val is not None:
+                with self._tab_manager._tabs_lock:
+                    if self._target_id in self._tab_manager._tabs:
+                        self._tab_manager._tabs[self._target_id]["title"] = str(val)
+                return str(val)
+        except Exception:
+            pass
         with self._tab_manager._tabs_lock:
             info = self._tab_manager._tabs.get(self._target_id)
             return info.get("title", "") if info else ""
@@ -628,15 +646,49 @@ class Tab:
             >>> browser.click("button#submit-btn")
         """
         session_id = self._ensure_session_id()
-        return self._runner.run_coro(  # type: ignore[no-any-return]
-            cdp_click(
+
+        async def _do_click() -> Dict[str, Any]:
+            loading = False
+            stopped = False
+            stop_future = self._runner.loop.create_future()
+
+            def _on_load_start(*args, **kwargs) -> None:
+                nonlocal loading
+                loading = True
+
+            def _on_load_stop(*args, **kwargs) -> None:
+                nonlocal stopped
+                stopped = True
+                if not stop_future.done():
+                    stop_future.set_result(None)
+
+            self._runner.cdp.on("Page.frameStartedLoading", _on_load_start, session_id=session_id)
+            self._runner.cdp.on("Page.frameStoppedLoading", _on_load_stop, session_id=session_id)
+            self._runner.cdp.on("Page.loadEventFired", _on_load_stop, session_id=session_id)
+
+            res = await cdp_click(
                 self._runner.cdp,
                 target,
                 button=button,
                 click_count=count,
                 session_id=session_id,
             )
-        )
+
+
+            await asyncio.sleep(0.15)
+            self._runner.cdp.off("Page.frameStartedLoading", _on_load_start, session_id=session_id)
+
+            if loading and not stopped:
+                try:
+                    await asyncio.wait_for(stop_future, timeout=15.0)
+                except asyncio.TimeoutError:
+                    pass
+
+            self._runner.cdp.off("Page.frameStoppedLoading", _on_load_stop, session_id=session_id)
+            self._runner.cdp.off("Page.loadEventFired", _on_load_stop, session_id=session_id)
+            return res  # type: ignore[no-any-return]
+
+        return self._runner.run_coro(_do_click())
 
     def type(
         self,
@@ -660,8 +712,28 @@ class Tab:
             >>> browser.type(2, "search query", press_enter=True)
         """
         session_id = self._ensure_session_id()
-        return self._runner.run_coro(  # type: ignore[no-any-return]
-            cdp_type(
+
+        async def _do_type() -> Dict[str, Any]:
+            loading = False
+            stopped = False
+            stop_future = self._runner.loop.create_future()
+
+            def _on_load_start(*args, **kwargs) -> None:
+                nonlocal loading
+                loading = True
+
+            def _on_load_stop(*args, **kwargs) -> None:
+                nonlocal stopped
+                stopped = True
+                if not stop_future.done():
+                    stop_future.set_result(None)
+
+            if press_enter:
+                self._runner.cdp.on("Page.frameStartedLoading", _on_load_start, session_id=session_id)
+                self._runner.cdp.on("Page.frameStoppedLoading", _on_load_stop, session_id=session_id)
+                self._runner.cdp.on("Page.loadEventFired", _on_load_stop, session_id=session_id)
+
+            res = await cdp_type(
                 self._runner.cdp,
                 target,
                 text,
@@ -669,7 +741,24 @@ class Tab:
                 press_enter=press_enter,
                 session_id=session_id,
             )
-        )
+
+
+            if press_enter:
+                await asyncio.sleep(0.15)
+                self._runner.cdp.off("Page.frameStartedLoading", _on_load_start, session_id=session_id)
+
+                if loading and not stopped:
+                    try:
+                        await asyncio.wait_for(stop_future, timeout=15.0)
+                    except asyncio.TimeoutError:
+                        pass
+
+                self._runner.cdp.off("Page.frameStoppedLoading", _on_load_stop, session_id=session_id)
+                self._runner.cdp.off("Page.loadEventFired", _on_load_stop, session_id=session_id)
+
+            return res  # type: ignore[no-any-return]
+
+        return self._runner.run_coro(_do_type())
 
     def select(self, target: Union[int, str], value: str) -> Dict[str, Any]:
         """Select an option in a dropdown (<select>) element.
