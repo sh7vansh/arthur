@@ -101,6 +101,7 @@ class _AsyncCDPRunner:
                 title=first_target.get("title", ""),
             )
             await self.cdp.call("Page.enable", session_id=session_id)
+            self.bind_dialog_handler(session_id)
             await self.cdp.call("Runtime.enable", session_id=session_id)
 
     async def _async_teardown(self) -> None:
@@ -115,6 +116,14 @@ class _AsyncCDPRunner:
                 self.instance.close()
             except Exception:
                 pass
+
+    def bind_dialog_handler(self, session_id: str) -> None:
+        async def on_dialog(params: Dict[str, Any]) -> None:
+            try:
+                await self.cdp.call("Page.handleJavaScriptDialog", {"accept": True}, session_id=session_id)
+            except Exception:
+                pass
+        self.cdp.on("Page.javascriptDialogOpening", on_dialog, session_id=session_id)
 
     def run_coro(self, coro: Any, timeout: Optional[float] = None) -> Any:
         """Run coroutine in daemon loop thread-safely."""
@@ -247,6 +256,7 @@ class TabManager:
             target_id = str(res["targetId"])
             sess_id = await self._runner.cdp.attach_to_target(target_id)
             await self._runner.cdp.call("Page.enable", session_id=sess_id)
+            self._runner.bind_dialog_handler(sess_id)
             await self._runner.cdp.call("Runtime.enable", session_id=sess_id)
             with self._tabs_lock:
                 if target_id not in self._tabs:
@@ -284,6 +294,7 @@ class TabManager:
         async def _attach() -> str:
             sess_id = await self._runner.cdp.attach_to_target(target_id)
             await self._runner.cdp.call("Page.enable", session_id=sess_id)
+            self._runner.bind_dialog_handler(sess_id)
             await self._runner.cdp.call("Runtime.enable", session_id=sess_id)
             with self._tabs_lock:
                 if target_id in self._tabs:

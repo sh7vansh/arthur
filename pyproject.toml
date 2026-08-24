@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "arthur-runtime"
-version = "0.3.3"
+version = "0.3.4"
 description = "Lightweight Headless Chromium Runtime for Gloria and AI Agents"
 readme = "README.md"
 requires-python = ">=3.10"
